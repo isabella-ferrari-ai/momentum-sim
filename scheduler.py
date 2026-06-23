@@ -22,7 +22,8 @@ import engine
 import strategy as st
 import trend as tr
 
-CHECK_INTERVAL = 10 * 60   # 每10分钟检查一次（收盘后等日线就绪）
+CHECK_INTERVAL = 10 * 60       # 默认检查间隔（收盘后等日线就绪）
+INTRADAY_INTERVAL = 2 * 60     # 盘中实时风控间隔（随时卖出需更高频）
 SIM_START = os.environ.get("SIM_START", "2026-06-23")
 PANEL_LOOKBACK_DAYS = 40   # 动量计算所需近端历史
 
@@ -159,16 +160,39 @@ def settle_close(td):
                 trade_date=td)
 
 
+def intraday_risk_scan(td):
+    """盘中实时风控扫描：符合止损/止盈/高点回撤的持仓随时卖出（不等次日开盘）。
+    买入只在集合竞价（次日开盘，由 settle_close 决定候选 + process_day 开盘成交），
+    卖出则任意时段可触发。"""
+    if td < SIM_START:
+        return
+    positions = db.get_positions()
+    if not positions:
+        return
+    try:
+        res = engine.process_intraday(td, log=True)
+        if res["sells"]:
+            names = "、".join(s.get("name") or s["code"] for s in res["sells"])
+            db.log_scan("盘中卖出",
+                        f"{td} 实时风控触发卖出 {len(res['sells'])} 只：{names}",
+                        trade_date=td)
+    except Exception as e:
+        db.log_scan("盘中风控异常", f"{repr(e)[:120]}", trade_date=td)
+
+
 def scan_once():
     now = _now()
     td = _today()
     hm = now.hour * 100 + now.minute
-    # 收盘后(15:05之后)做日线结算
+    # 收盘后(15:05之后)做日线结算（选股 + 次日集合竞价买入决策 + 慢信号卖出）
     if now.weekday() < 5 and 1505 <= hm <= 2359:
         settle_close(td)
-    elif now.weekday() < 5 and 900 <= hm < 1505:
+    # 盘中(09:30-11:30 / 13:00-15:00)实时风控：符合条件随时卖出
+    elif now.weekday() < 5 and (930 <= hm <= 1130 or 1300 <= hm <= 1500):
+        intraday_risk_scan(td)
+    elif now.weekday() < 5 and 900 <= hm < 930:
         if now.minute < 10:
-            db.log_scan("盘中观望", f"{td} 动量轮动为收盘后结算模型，盘中不交易", trade_date=td)
+            db.log_scan("集合竞价", f"{td} 买入仅在集合竞价执行（用昨收候选池）", trade_date=td)
 
 
 def main():
@@ -185,7 +209,11 @@ def main():
                 db.log_scan("异常", f"{repr(e)[:160]}", trade_date=_today())
             except Exception:
                 pass
-        time.sleep(CHECK_INTERVAL)
+        # 盘中(09:30-11:30/13:00-15:00)用更短间隔做实时风控，其余时段用默认间隔
+        now = _now()
+        hm = now.hour * 100 + now.minute
+        intraday = now.weekday() < 5 and (930 <= hm <= 1130 or 1300 <= hm <= 1500)
+        time.sleep(INTRADAY_INTERVAL if intraday else CHECK_INTERVAL)
 
 
 if __name__ == "__main__":

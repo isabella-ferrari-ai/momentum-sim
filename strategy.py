@@ -46,7 +46,13 @@ W_VOLPRICE = 0.25
 W_RELSTR = 0.25
 
 # ----------------------------- 卖出/风控 -----------------------------
-STOP_LOSS = -0.08            # 持仓回撤 > -8%（收盘触发，次日开盘执行）
+# 即时风控（盘中实时价触发，符合条件随时卖出，不等次日开盘）
+STOP_LOSS = -0.08            # 成本硬止损：相对买入成本回撤 ≤ -8%
+TRAIL_STOP = -0.12           # 高点回撤止盈：自持仓最高价回撤 ≤ -12%（保护利润/追踪止损）
+TRAIL_ARM_PROFIT = 0.08      # 浮盈达 +8% 后才启用高点回撤止盈（避免一进场就被小回撤打掉）
+TAKE_PROFIT = 0.30           # 固定止盈：浮盈 ≥ +30% 落袋
+
+# 慢信号（收盘判定，次日集合竞价卖出）
 HOLD_MAX_DAYS = 15           # 最长持有 15 自然日
 RANK_EXIT_PCT = 0.30         # 个股综合分跌出全市场 Top30% 则卖
 
@@ -292,23 +298,58 @@ def top_rank_codes(scored, pct=RANK_EXIT_PCT):
     return {c["code"] for c in scored[:n]}
 
 
+def evaluate_risk_exit(avg_cost, last_price, high_since_open):
+    """即时风控判定（成本止损 / 高点回撤止盈 / 固定止盈）。
+    与时间无关，盘中实时价或收盘价都可调用。返回 (do_sell, reason) 或 (False, "")。
+    注意：调用方需自行保证「严格 T+1：买入当日不卖」。"""
+    if not avg_cost or avg_cost <= 0 or not last_price or last_price <= 0:
+        return False, ""
+    ret = last_price / avg_cost - 1
+    # 1) 成本硬止损
+    if ret <= STOP_LOSS:
+        return True, f"成本止损 回撤{ret*100:.1f}%(≤{STOP_LOSS*100:.0f}%)"
+    # 2) 固定止盈
+    if ret >= TAKE_PROFIT:
+        return True, f"止盈 浮盈+{ret*100:.1f}%(≥{TAKE_PROFIT*100:.0f}%)"
+    # 3) 高点回撤止盈（浮盈达标后启用追踪止损）
+    high = high_since_open or avg_cost
+    if high > 0 and (high / avg_cost - 1) >= TRAIL_ARM_PROFIT:
+        draw = last_price / high - 1
+        if draw <= TRAIL_STOP:
+            return True, f"高点回撤止盈 自高点{draw*100:.1f}%(≤{TRAIL_STOP*100:.0f}%)"
+    return False, ""
+
+
+def evaluate_intraday_sell(pos, last_price, current_date):
+    """盘中实时卖出判定——仅即时风控（止损/止盈/回撤），符合条件任意时段触发。
+    慢信号（概念退出/排名退出/到期）留给收盘 evaluate_sell。
+    严格 T+1：买入当日不卖。返回 (do_sell, reason)。"""
+    if pos["open_date"] == current_date:
+        return False, "T+1当日不可卖"
+    high = max(pos.get("high_since_open") or pos["avg_cost"], last_price)
+    return evaluate_risk_exit(pos["avg_cost"], last_price, high)
+
+
 def evaluate_sell(pos, row, current_date, hot_sectors, top30_codes):
-    """决定持仓 pos 是否在次日开盘卖出。基于 T 日（current_date）收盘判定，
-    次日开盘执行（与买入对称的 T+1）。返回 (do_sell, reason)。
+    """决定持仓 pos 是否卖出。基于 T 日（current_date）收盘判定。
+    即时风控（止损/止盈/回撤）命中则即时执行；慢信号（到期/概念退出/排名退出）
+    标记次日集合竞价卖出。返回 (do_sell, reason)。
     严格 T+1：买入当日不卖。
     row: 该股 current_date 日线行（dict），用于止损/回撤判定。"""
     if pos["open_date"] == current_date:
         return False, "T+1当日不可卖"
     days = _days_held(pos["open_date"], current_date)
     close = (row.get("close") if row else None) or pos.get("last_price") or pos["avg_cost"]
-    ret = close / pos["avg_cost"] - 1
+    high = max(pos.get("high_since_open") or pos["avg_cost"],
+               (row.get("high") if row else None) or 0, close)
 
-    # 1) 止损：回撤 > -8%
-    if ret <= STOP_LOSS:
-        return True, f"回撤{ret*100:.1f}%(≤-8%)止损"
+    # 1) 即时风控（成本止损/固定止盈/高点回撤止盈）
+    do_sell, reason = evaluate_risk_exit(pos["avg_cost"], close, high)
+    if do_sell:
+        return True, reason
     # 2) 最长持有到期
     if days >= HOLD_MAX_DAYS:
-        return True, f"持有{days}天到期(≥15)清仓"
+        return True, f"持有{days}天到期(≥{HOLD_MAX_DAYS})清仓"
     # 3) 所属概念跌出热门 Top30%
     grp = pos.get("theme")
     if grp and hot_sectors and grp not in hot_sectors:

@@ -424,15 +424,119 @@ def concept_map_date(path=PANEL_DB):
         return None
 
 
+# ==========================================================================
+# 当下热点概念人工 overlay
+# ==========================================================================
+# 自动概念源（新浪 gn_*）只有 ~173 个偏旧的概念，缺失当下最贴近行情的题材
+# （如「六氟化钨出口管制/对日制裁」「半导体材料国产替代」「稀土永磁管制」），
+# 导致厦门钨业等被错误归到「出口退税」这类无关概念。
+# 这里维护一份当下热点事件→个股的人工映射，刷新概念时叠加（优先级最高，
+# 排在自动概念之前），让分组与候选理由贴近当前盘面逻辑。
+# 维护方式：跟踪盘面主线题材，按需增删；key=贴近行情的概念名，value=bs 代码列表。
+HOT_THEME_OVERLAY = {
+    "六氟化钨出口管制": ["sh.600549", "sz.000657", "sh.601958"],   # 厦门钨业/中钨高新/金钼股份
+    "半导体材料": ["sh.600549", "sh.688353", "sz.300054", "sh.600378",
+                "sz.000657", "sh.688268"],                      # 厦钨/华盛锂电/鼎龙/昊华/中钨/华特气体
+    "稀有金属管制": ["sh.600549", "sz.000657", "sh.600111", "sh.600259",
+                 "sh.601958"],                                  # 厦钨/中钨/北方稀土/中稀有色/金钼
+    "对日制裁反制": ["sh.600549", "sz.000657", "sh.600111"],
+}
+
+
+def hot_theme_overlay(only_codes=None):
+    """返回 {bs代码: [热点概念,...]}（人工 overlay，倒排自 HOT_THEME_OVERLAY）。
+    only_codes: 限定在股票池内。"""
+    out = {}
+    for theme, codes in HOT_THEME_OVERLAY.items():
+        for code in codes:
+            if only_codes is not None and code not in only_codes:
+                continue
+            out.setdefault(code, []).append(theme)
+    return out
+
+
 def get_group_map(path=PANEL_DB):
     """板块分组映射：优先用概念板块（{code: [概念,...]}），无概念缓存时退化为
     行业分类（{code: [行业名]} 单元素列表）。返回 (group_map, source)。
-    source ∈ {'concept','industry'}。供 strategy/engine 统一调用。"""
+    source ∈ {'concept','industry'}。供 strategy/engine 统一调用。
+    叠加 HOT_THEME_OVERLAY 当下热点概念（排在自动概念之前，优先归组）。"""
     cmap = load_concept_map(path)
+    overlay = hot_theme_overlay()
     if cmap:
+        for code, themes in overlay.items():
+            existing = cmap.get(code, [])
+            # 热点概念置前 + 去重保序
+            merged = themes + [c for c in existing if c not in themes]
+            cmap[code] = merged
         return cmap, "concept"
     ind = load_industry(path)
-    return {code: [v] for code, v in ind.items() if v}, "industry"
+    gmap = {code: [v] for code, v in ind.items() if v}
+    for code, themes in overlay.items():
+        gmap[code] = themes + [c for c in gmap.get(code, []) if c not in themes]
+    return gmap, "industry"
+
+
+# ==========================================================================
+# 实时行情快照（盘中「随时卖出」用）——腾讯 qt.gtimg 主源（本环境验证可用）
+# ==========================================================================
+def _tx_code(code):
+    """六位/baostock 代码 -> 腾讯代码 sh600000 / sz000001 / bj8xxxxx。"""
+    c = code.split(".")[-1] if "." in code else code
+    pre = code.split(".")[0] if "." in code else None
+    if pre == "sh" or c.startswith(("6", "9")):
+        return "sh" + c
+    if pre == "bj" or c.startswith(("8", "4", "92")):
+        return "bj" + c
+    return "sz" + c
+
+
+def _tx_fetch_batch(tx_codes, retries=3, timeout=15):
+    q = ",".join(tx_codes)
+    url = "https://qt.gtimg.cn/q=" + q
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"}
+            )
+            return urllib.request.urlopen(req, timeout=timeout).read().decode("gbk", "ignore")
+        except Exception:
+            time.sleep(0.4 * (attempt + 1))
+    return ""
+
+
+def tx_spot(codes, batch=60, pause=0.05):
+    """腾讯批量实时快照。codes: 六位或 baostock 代码列表。
+    返回 {bs代码: {price,preclose,open,high,low,pct,amount,ts}}。空则 {}。"""
+    out = {}
+    codes = list(codes)
+    for i in range(0, len(codes), batch):
+        chunk = codes[i:i + batch]
+        raw = _tx_fetch_batch([_tx_code(c) for c in chunk])
+        if not raw:
+            continue
+        for line in raw.strip().split("\n"):
+            if "=" not in line or '"' not in line:
+                continue
+            body = line.split('"', 1)[1].rsplit('"', 1)[0]
+            p = body.split("~")
+            if len(p) < 35 or not p[2]:
+                continue
+
+            def _f(idx):
+                try:
+                    return float(p[idx])
+                except Exception:
+                    return None
+
+            bs_code = to_bs_code(p[2])
+            out[bs_code] = {
+                "code": bs_code, "name": p[1], "price": _f(3), "preclose": _f(4),
+                "open": _f(5), "high": _f(33), "low": _f(34), "pct": _f(32),
+                "amount": (_f(37) * 1e4) if _f(37) is not None else None,
+                "ts": p[30] if len(p) > 30 else None,
+            }
+        time.sleep(pause)
+    return out
 
 
 def panel_dates(path=PANEL_DB):

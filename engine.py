@@ -132,6 +132,56 @@ def update_equity(trade_date):
 
 
 # ==========================================================================
+# 盘中实时风控（「随时卖出」——符合止损/止盈/回撤条件即时成交，不等次日开盘）
+# ==========================================================================
+def process_intraday(trade_date, spot=None, log=True):
+    """盘中实时风控扫描：取持仓实时价，命中即时风控（止损/固定止盈/高点回撤止盈）
+    的持仓【立即按实时价卖出】。慢信号（概念/排名/到期）仍由收盘 settle 决定。
+    严格 T+1：买入当日（open_date==trade_date）不卖。
+    spot: {bs代码: {price,high,...}} 实时快照；None 则现取腾讯源。
+    返回 {"sells": [...], "checked": n}。"""
+    positions = db.get_positions()
+    if not positions:
+        return {"sells": [], "checked": 0}
+    if spot is None:
+        spot = dfetch.tx_spot([p["code"] for p in positions])
+    sells = []
+    for pos in positions:
+        if pos["open_date"] == trade_date:
+            continue  # T+1 当日不卖
+        q = spot.get(pos["code"])
+        if not q or not q.get("price"):
+            continue
+        px = q["price"]
+        # 更新实时价与持仓最高价（供回撤止盈判定 + 看板浮盈）
+        high_since = max(pos.get("high_since_open") or pos["avg_cost"],
+                         q.get("high") or 0, px)
+        db.update_position_price(pos["code"], px, high_since)
+        pos["high_since_open"] = high_since
+        do_sell, reason = st.evaluate_intraday_sell(pos, px, trade_date)
+        if not do_sell:
+            continue
+        # 跌停封死则卖不出，顺延（标记 pending 待收盘/次日处理）
+        limit = dfetch.limit_pct(pos["code"])
+        preclose = q.get("preclose") or pos["avg_cost"]
+        if preclose > 0 and (px / preclose - 1) <= -(limit - 0.005):
+            db.set_pending_sell(pos["code"], True, reason + "(盘中跌停顺延)")
+            continue
+        t = execute_sell(pos, px, trade_date, reason="盘中" + reason)
+        if t:
+            sells.append(t)
+    if sells:
+        update_equity(trade_date)
+        if log:
+            db.log_scan("盘中风控",
+                        f"{trade_date} 实时风控卖出{len(sells)}只 "
+                        f"持仓{len(db.get_positions())}/{st.MAX_POSITIONS}",
+                        signals={"sells": [s["code"] for s in sells]},
+                        trade_date=trade_date)
+    return {"sells": sells, "checked": len(positions)}
+
+
+# ==========================================================================
 # 单交易日处理（回测/收盘结算共用）
 # ==========================================================================
 def process_day(panel, names, group_map, index_df, dates, trade_date, log=True,

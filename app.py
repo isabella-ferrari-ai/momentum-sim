@@ -137,7 +137,7 @@ def api_scan_log():
 def api_strategy():
     _select_db()
     return jsonify({
-        "model": "热门概念板块成分股动量轮动 — T日收盘选股，T+1开盘执行",
+        "model": "热门概念板块成分股动量轮动 — T日收盘选股，买入仅集合竞价，卖出随时触发",
         "initial_capital": db.INITIAL_CAPITAL,
         "max_positions": st.MAX_POSITIONS,
         "position_pct": st.POSITION_PCT,
@@ -146,8 +146,15 @@ def api_strategy():
         "top_n_candidates": st.TOP_N_CANDIDATES,
         "min_amount": st.MIN_AMOUNT,
         "stop_loss": st.STOP_LOSS,
+        "take_profit": st.TAKE_PROFIT,
+        "trail_stop": st.TRAIL_STOP,
+        "trail_arm_profit": st.TRAIL_ARM_PROFIT,
         "hold_max_days": st.HOLD_MAX_DAYS,
         "rank_exit_pct": st.RANK_EXIT_PCT,
+        "buy_rule": "仅集合竞价买入（次日09:25集合竞价≈开盘价，严格T+1）",
+        "sell_rule": f"卖出随时触发：成本止损{int(st.STOP_LOSS*100)}% / 固定止盈+{int(st.TAKE_PROFIT*100)}% / "
+                     f"高点回撤止盈{int(st.TRAIL_STOP*100)}%(浮盈≥+{int(st.TRAIL_ARM_PROFIT*100)}%后启用)；"
+                     f"概念退出/排名退出/持有{st.HOLD_MAX_DAYS}天到期为收盘慢信号次日集合竞价卖",
         "trend_filter": "沪深300 MA200 迟滞±3%（趋势OFF不开新仓且清仓退守现金）",
         "factors": [
             {"name": "MOM_5", "weight": st.W_MOM5, "desc": "过去5日涨幅"},

@@ -14,7 +14,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = os.path.join(BASE_DIR, "data", "trading.db")
 DB_PATH = os.environ.get("TRADING_DB", DEFAULT_DB)
 
-INITIAL_CAPITAL = 500_000.0
+INITIAL_CAPITAL = 1_000_000.0
 
 
 def set_db_path(path):
