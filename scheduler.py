@@ -82,6 +82,20 @@ def _ensure_concept_map(td):
         db.log_scan("概念异常", f"{repr(e)[:120]}", trade_date=td)
 
 
+def _log_board_heat(td):
+    """每日收盘后自动抓概念板块涨幅榜（客观热度层），写入扫描日志。
+    这是主题 overlay「定期自动搜索」的客观层：零推断、带真实交易日，回答「今天哪些板块在动」，
+    供 isabella 的题材发现搜索做置信度参考。失败安全跳过，不影响主流程。"""
+    try:
+        import theme_research as tr
+        rows = tr.board_heat(top_n=10)
+        if rows:
+            top = "、".join(f"{r['name']}({r['pct_chg']:+.1f}%)" for r in rows[:6])
+            db.log_scan("板块热度", f"{td} 概念板块涨幅榜TOP6：{top}", trade_date=td)
+    except Exception as e:
+        db.log_scan("板块热度异常", f"{repr(e)[:120]}", trade_date=td)
+
+
 def _compute_trend(td):
     """拉沪深300长周期收盘，算 MA200 迟滞趋势状态，返回 {date: bool}。失败返回 None。
     需在 baostock 会话内调用（复用 settle_close 的 session）。"""
@@ -125,6 +139,7 @@ def settle_close(td):
         db.log_scan("等待数据", f"{td} 日线未就绪(收盘后约15:30更新)，稍后重试", trade_date=td)
         return
     _ensure_concept_map(td)
+    _log_board_heat(td)
     panel, names = dfetch.load_panel()
     group_map, src = dfetch.get_group_map(as_of_date=td, use_overlay=True)
     with dfetch.bs_session():
