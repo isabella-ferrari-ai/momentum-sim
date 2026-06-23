@@ -28,6 +28,11 @@ STAMP_TAX = 0.0005      # 卖出印花税万5
 MIN_COMMISSION = 5.0
 
 
+def _now_hms():
+    """当前 HH:MM:SS（盘中实时成交时间戳用）。"""
+    return datetime.now().strftime("%H:%M:%S")
+
+
 def _buy_cost(amount):
     return max(amount * COMMISSION, MIN_COMMISSION)
 
@@ -85,7 +90,7 @@ def execute_buy(code, name, industry, price, signal_date, execute_date, score=No
         "last_price": price, "high_since_open": price, "score": score,
     })
     t = {
-        "ts": execute_date + "T09:30:00", "signal_date": signal_date,
+        "ts": execute_date + "T09:25:00", "signal_date": signal_date,
         "execute_date": execute_date, "trade_date": execute_date,
         "code": code, "name": name, "theme": industry, "side": "BUY",
         "price": round(price, 3), "shares": shares, "amount": round(amount, 2),
@@ -95,7 +100,7 @@ def execute_buy(code, name, industry, price, signal_date, execute_date, score=No
     return t
 
 
-def execute_sell(pos, price, execute_date, reason=""):
+def execute_sell(pos, price, execute_date, reason="", ts=None):
     acct = db.get_account()
     shares = pos["shares"]
     amount = shares * price
@@ -106,7 +111,7 @@ def execute_sell(pos, price, execute_date, reason=""):
     db.set_cash(acct["cash"] + amount - fee)
     db.remove_position(pos["code"])
     t = {
-        "ts": execute_date + "T09:30:00", "signal_date": pos.get("signal_date"),
+        "ts": ts or (execute_date + "T09:30:00"), "signal_date": pos.get("signal_date"),
         "execute_date": execute_date, "trade_date": execute_date,
         "code": pos["code"], "name": pos.get("name"), "theme": pos.get("theme"),
         "side": "SELL", "price": round(price, 3), "shares": shares,
@@ -169,7 +174,8 @@ def process_intraday(trade_date, spot=None, log=True):
         if preclose > 0 and (px / preclose - 1) <= -(limit - 0.005):
             db.set_pending_sell(pos["code"], True, reason + "(盘中跌停顺延)")
             continue
-        t = execute_sell(pos, px, trade_date, reason="盘中" + reason)
+        t = execute_sell(pos, px, trade_date, reason="盘中" + reason,
+                         ts=trade_date + "T" + _now_hms())
         if t:
             sells.append(t)
     if sells:

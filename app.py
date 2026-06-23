@@ -133,6 +133,63 @@ def api_scan_log():
     return jsonify(db.get_scan_log(40))
 
 
+@app.route("/api/indices")
+def api_indices():
+    """参考情绪的 A 股宽基指数实时快照（腾讯源）。"""
+    import data_fetcher as dfetch
+    try:
+        items = dfetch.index_spot()
+    except Exception:
+        items = []
+    return jsonify({"items": items, "as_of": datetime.now().isoformat(timespec="seconds")})
+
+
+@app.route("/api/trend")
+def api_trend():
+    """趋势总闸可视化：沪深300收盘 + MA200 + 迟滞带 + 每日 ON/OFF 状态（尾段 + 今日实时点）。"""
+    import json as _json
+    import trend as tr
+    import data_fetcher as dfetch
+    path = os.path.join(BASE_DIR, "data", "hs300_close.json")
+    closes = {}
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            closes = _json.load(f)
+    # 追加今日实时点（盘中），让趋势线连到当前
+    live_pct = None
+    try:
+        for ix in dfetch.index_spot():
+            if ix["code"] == "sh.000300" and ix.get("price"):
+                today = datetime.now().strftime("%Y-%m-%d")
+                closes[today] = ix["price"]
+                live_pct = ix.get("pct")
+                break
+    except Exception:
+        pass
+    if not closes:
+        return jsonify({"available": False})
+    win, band = 200, 0.03
+    states = tr.compute_states(closes, mode="ma_hysteresis", win=win, band=band)
+    dates = sorted(closes)
+    # MA200 序列
+    vals = [closes[d] for d in dates]
+    ma = []
+    for i in range(len(vals)):
+        ma.append(round(sum(vals[i - win + 1:i + 1]) / win, 2) if i + 1 >= win else None)
+    tail = 250
+    sl = slice(-tail, None)
+    ds = dates[sl]
+    rows = [{"date": d, "close": round(closes[d], 2), "ma": ma[i],
+             "on": bool(states.get(d))} for i, d in list(enumerate(dates))[sl]]
+    cur = rows[-1] if rows else None
+    return jsonify({
+        "available": True, "bench": "沪深300", "win": win, "band": band,
+        "rows": rows, "live_pct": live_pct,
+        "on": cur["on"] if cur else None,
+        "on_pct_recent": tr.describe({d: states[d] for d in ds})["on_pct"],
+    })
+
+
 @app.route("/api/strategy")
 def api_strategy():
     _select_db()

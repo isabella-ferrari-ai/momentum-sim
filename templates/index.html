@@ -48,6 +48,9 @@ tailwind.config = {
     </div>
   </header>
 
+  <!-- Index ribbon (参考情绪宽基指数, 腾讯实时) -->
+  <section id="index-ribbon" class="flex flex-wrap gap-2 mb-5 text-xs"></section>
+
   <!-- KPI cards -->
   <section class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
     <div class="card glow p-4">
@@ -79,6 +82,16 @@ tailwind.config = {
       <div class="text-xs text-muted">已实现 <span id="realized" class="num">—</span> · 浮动 <span id="floating" class="num">—</span></div>
     </div>
     <div id="equity-chart" style="height:300px"></div>
+  </section>
+
+  <!-- Trend gate: 沪深300 + MA200 迟滞带 -->
+  <section class="card p-4 mb-5">
+    <div class="flex items-center justify-between mb-2">
+      <h2 class="font-semibold text-sm">趋势总闸 · 沪深300 vs MA200
+        <span class="text-muted text-xs">迟滞±3% · 收盘站上MA200×1.03→ON，跌破×0.97→OFF</span></h2>
+      <div class="text-xs"><span id="trend-state" class="num">—</span> · 近端在场 <span id="trend-onpct" class="num">—</span></div>
+    </div>
+    <div id="trend-chart" style="height:260px"></div>
   </section>
 
   <div class="grid lg:grid-cols-2 gap-5 mb-5">
@@ -143,7 +156,7 @@ tailwind.config = {
         <table class="w-full text-xs sm:text-sm">
           <thead class="text-muted text-left sticky top-0 bg-panel">
             <tr class="border-b border-line">
-              <th class="py-2 pr-2">信号日</th><th class="pr-2">成交日</th><th class="pr-2">方向</th>
+              <th class="py-2 pr-2">信号日</th><th class="pr-2">成交时间</th><th class="pr-2">方向</th>
               <th class="pr-2">股票</th><th class="pr-2">价格</th><th class="pr-2">盈亏</th><th class="pr-2">理由</th>
             </tr>
           </thead>
@@ -164,7 +177,7 @@ const sign = n => n>0?'+':'';
 const colorCls = n => n>0?'text-up':(n<0?'text-down':'text-muted');
 const eYi = n => n==null?'—':(n/1e8).toFixed(2)+'亿';
 
-let equityChart, sectorChart, DB='live', INIT_CAP=1000000;
+let equityChart, sectorChart, trendChart, DB='live', INIT_CAP=1000000;
 function q(u){return u+(u.includes('?')?'&':'?')+'db='+DB;}
 async function j(u){const r=await fetch(q(u));return r.json();}
 
@@ -235,9 +248,10 @@ async function loadTrades(){
   tb.innerHTML=data.map(t=>{
     const sideCls=t.side==='BUY'?'bg-up/20 text-up':'bg-down/20 text-down';
     const pnl=t.side==='SELL'?`<span class="num ${colorCls(t.pnl)}">${sign(t.pnl_pct)}${t.pnl_pct}%</span>`:'<span class="text-muted">—</span>';
+    const tm=(t.ts||'').replace('T',' ').slice(5);  // MM-DD HH:MM:SS
     return `<tr class="border-b border-line/40">
       <td class="py-2 pr-2 text-muted whitespace-nowrap">${(t.signal_date||'').slice(5)||'—'}</td>
-      <td class="pr-2 whitespace-nowrap">${(t.execute_date||t.trade_date||'').slice(5)}</td>
+      <td class="pr-2 whitespace-nowrap num text-[11px]">${tm||(t.execute_date||t.trade_date||'').slice(5)}</td>
       <td class="pr-2"><span class="tag ${sideCls}">${t.side==='BUY'?'买入':'卖出'}</span></td>
       <td class="pr-2 whitespace-nowrap">${t.name||t.code}</td>
       <td class="pr-2 num">${fmt(t.price)}</td>
@@ -291,17 +305,66 @@ async function loadScanLog(){
   }).join('')||'<div class="text-muted">暂无记录</div>';
 }
 
+async function loadIndices(){
+  let d; try{ d=await fetch('/api/indices').then(r=>r.json()); }catch(e){ return; }
+  const its=(d&&d.items)||[];
+  const el=document.getElementById('index-ribbon');
+  if(!its.length){el.innerHTML='<span class="text-muted">指数实时源暂不可用</span>';return;}
+  el.innerHTML=its.map(x=>{
+    const c=colorCls(x.pct);
+    return `<span class="card px-3 py-1.5 flex items-center gap-2">
+      <span class="text-muted">${x.name}</span>
+      <span class="num font-semibold">${fmt(x.price)}</span>
+      <span class="num ${c}">${sign(x.pct)}${x.pct==null?'—':x.pct}%</span></span>`;
+  }).join('');
+}
+
+async function loadTrend(){
+  let d; try{ d=await fetch('/api/trend').then(r=>r.json()); }catch(e){ return; }
+  if(!d||!d.available){return;}
+  const rows=d.rows||[];
+  const dates=rows.map(r=>r.date);
+  const close=rows.map(r=>r.close);
+  const ma=rows.map(r=>r.ma);
+  const hi=rows.map(r=>r.ma==null?null:+(r.ma*(1+d.band)).toFixed(2));
+  const lo=rows.map(r=>r.ma==null?null:+(r.ma*(1-d.band)).toFixed(2));
+  const st=document.getElementById('trend-state');
+  st.textContent=d.on?'趋势ON 在趋势上':'趋势OFF 退守现金';
+  st.className='num '+(d.on?'text-up':'text-down');
+  document.getElementById('trend-onpct').textContent=(d.on_pct_recent==null?'—':d.on_pct_recent+'%');
+  // OFF 区间背景标记
+  const marks=[]; let s=null;
+  for(let i=0;i<rows.length;i++){ if(!rows[i].on&&s===null)s=dates[i];
+    if((rows[i].on||i===rows.length-1)&&s!==null){marks.push([{xAxis:s},{xAxis:dates[i]}]);s=null;} }
+  trendChart.setOption({
+    tooltip:{trigger:'axis',backgroundColor:'#0f1626',borderColor:'#243150',textStyle:{color:'#e6edf7'},
+      formatter:p=>{const r=rows[p[0].dataIndex];return r.date+'<br/>沪深300 '+fmt(r.close)+'<br/>MA200 '+fmt(r.ma)+'<br/>'+(r.on?'<span style="color:#ff4d4f">趋势ON</span>':'<span style="color:#13c2a2">趋势OFF</span>');}},
+    legend:{data:['沪深300','MA200','上轨+3%','下轨-3%'],textStyle:{color:'#8a96ab'},top:0,itemWidth:14,itemHeight:8},
+    grid:{left:55,right:20,top:28,bottom:30},
+    xAxis:{type:'category',data:dates,axisLine:{lineStyle:{color:'#243150'}},axisLabel:{color:'#8a96ab',fontSize:10}},
+    yAxis:{type:'value',scale:true,axisLabel:{color:'#8a96ab',fontSize:10},splitLine:{lineStyle:{color:'#16203a'}}},
+    series:[
+      {name:'沪深300',type:'line',data:close,smooth:true,symbol:'none',lineStyle:{color:'#38bdf8',width:2},
+       markArea:{silent:true,itemStyle:{color:'rgba(19,194,178,.10)'},data:marks}},
+      {name:'MA200',type:'line',data:ma,smooth:true,symbol:'none',lineStyle:{color:'#fbbf24',width:1.5}},
+      {name:'上轨+3%',type:'line',data:hi,smooth:true,symbol:'none',lineStyle:{color:'#a78bfa',width:1,type:'dashed'}},
+      {name:'下轨-3%',type:'line',data:lo,smooth:true,symbol:'none',lineStyle:{color:'#a78bfa',width:1,type:'dashed'}},
+    ]
+  });
+}
+
 function tick(){const d=new Date();document.getElementById('clock').textContent=d.toLocaleTimeString('zh-CN');}
 
 async function refresh(){
   await Promise.all([loadOverview(),loadEquity(),loadPositions(),loadTrades(),
-    loadCandidates(),loadSectors(),loadScanLog()]);
+    loadCandidates(),loadSectors(),loadScanLog(),loadIndices(),loadTrend()]);
 }
 
 window.addEventListener('load',()=>{
   equityChart=echarts.init(document.getElementById('equity-chart'));
   sectorChart=echarts.init(document.getElementById('sector-chart'));
-  window.addEventListener('resize',()=>{equityChart.resize();sectorChart.resize();});
+  trendChart=echarts.init(document.getElementById('trend-chart'));
+  window.addEventListener('resize',()=>{equityChart.resize();sectorChart.resize();trendChart.resize();});
   refresh();
   tick();setInterval(tick,1000);
   setInterval(refresh,30000);
