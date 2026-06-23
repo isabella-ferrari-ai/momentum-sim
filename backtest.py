@@ -172,9 +172,11 @@ class Portfolio:
 
 
 def run(panel, names, group_map, dates, start=None, end=None,
-        prog_every=60, log=True, trend_states=None):
+        prog_every=60, log=True, trend_states=None, use_overlay=False):
     """跑回测。dates 为升序交易日全集；start/end 限定回测区间（含）。
     trend_states: {date: bool} 市场择时状态（None=不择时）。OFF 时不开新仓且清仓退守现金。
+    use_overlay: 是否每日按 td 叠加人工主题 overlay（默认 False，避免前视污染回测）。
+                 启用时 group_map 为基础概念分组，每个交易日按当日时间边界并入 overlay。
     返回 dict(equity, trades, candidates_last)。"""
     import trend as tr
     pf = Portfolio()
@@ -196,9 +198,15 @@ def run(panel, names, group_map, dates, start=None, end=None,
 
     for i, td in enumerate(dates):
         # 1) D日选股 + 板块热度 + 全市场评分（决策依据，用预计算因子，只含≤D数据）
+        #    overlay 启用时：每日按 td 时间边界加载并入分组（杜绝把当前主题套到历史）
+        gmap_td = group_map
+        if use_overlay:
+            ov = dfetch.load_theme_overlay(td, only_codes=set(group_map) or None)
+            if ov:
+                gmap_td = dfetch.merge_overlay(group_map, ov)
         facts = facts_by_date.get(td, {})
         cands, hot, sector_stats, scored = st.select_momentum_candidates(
-            panel, names, group_map, td, return_context=True, facts=facts)
+            panel, names, gmap_td, td, return_context=True, facts=facts)
         top30 = st.top_rank_codes(scored)
 
         # 2) 卖出执行：上一交易日收盘标记的 pending 在 D 开盘价卖出
@@ -304,8 +312,12 @@ def main():
         gmap = {c: [v] for c, v in dfetch.load_industry(panel_path).items() if v}
         src = "industry"
     dates = dfetch.panel_dates(panel_path)
+    # 人工主题 overlay：回测默认禁用（避免前视污染）；启用须每日按 td 加载
+    use_overlay = os.environ.get("BT_USE_THEME_OVERLAY", "0") == "1"
+    if use_overlay:
+        src += "+overlay(daily)"
     print(f"[bt] codes={len(panel)} dates={len(dates)} group_src={src} "
-          f"({dates[0]}~{dates[-1]})")
+          f"overlay={'ON' if use_overlay else 'OFF'} ({dates[0]}~{dates[-1]})")
 
     # 趋势总闸（BT_TREND=1 启用，默认与实盘一致：沪深300 MA200迟滞±3%）
     trend_states = None
@@ -322,7 +334,8 @@ def main():
         src += "+趋势MA200迟滞±3%"
         print(f"[bt] trend filter ON (lookback {lb}): {tr.describe(trend_states)}")
 
-    res = run(panel, names, gmap, dates, start=start, end=end, trend_states=trend_states)
+    res = run(panel, names, gmap, dates, start=start, end=end,
+              trend_states=trend_states, use_overlay=use_overlay)
     eq = res["equity"]
     if not eq:
         print("[bt] no equity produced"); return
@@ -332,6 +345,8 @@ def main():
     m = metrics.compute_all(eq, res["trades"], benches=benches, regime_bench=regime_bench)
     m["group_source"] = src
     m["panel"] = panel_path
+    m["theme_overlay_enabled"] = use_overlay
+    m["theme_overlay_path"] = dfetch.THEME_OVERLAY_PATH if use_overlay else None
 
     # 基准曲线归一化到初始资金，便于和策略净值同图对比
     bench_curves = {}

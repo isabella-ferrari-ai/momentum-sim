@@ -126,7 +126,7 @@ def settle_close(td):
         return
     _ensure_concept_map(td)
     panel, names = dfetch.load_panel()
-    group_map, src = dfetch.get_group_map()
+    group_map, src = dfetch.get_group_map(as_of_date=td, use_overlay=True)
     with dfetch.bs_session():
         index_df = dfetch.get_index(SIM_START, td)
         dates = [d for d in dfetch.get_trade_dates(SIM_START, td) if d in set(dfetch.panel_dates())]

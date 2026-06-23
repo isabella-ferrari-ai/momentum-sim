@@ -437,55 +437,109 @@ def concept_map_date(path=PANEL_DB):
 
 
 # ==========================================================================
-# 当下热点概念人工 overlay
+# 当下热点概念人工 overlay —— 带时间边界的数据输入（非硬编码当前认知）
 # ==========================================================================
 # 自动概念源（新浪 gn_*）只有 ~173 个偏旧的概念，缺失当下最贴近行情的题材
-# （如「六氟化钨出口管制/对日制裁」「半导体材料国产替代」「稀土永磁管制」），
-# 导致厦门钨业等被错误归到「出口退税」这类无关概念。
-# 这里维护一份当下热点事件→个股的人工映射，刷新概念时叠加（优先级最高，
-# 排在自动概念之前），让分组与候选理由贴近当前盘面逻辑。
-# 维护方式：跟踪盘面主线题材，按需增删；key=贴近行情的概念名，value=bs 代码列表。
-HOT_THEME_OVERLAY = {
-    "六氟化钨出口管制": ["sh.600549", "sz.000657", "sh.601958"],   # 厦门钨业/中钨高新/金钼股份
-    "半导体材料": ["sh.600549", "sh.688353", "sz.300054", "sh.600378",
-                "sz.000657", "sh.688268"],                      # 厦钨/华盛锂电/鼎龙/昊华/中钨/华特气体
-    "稀有金属管制": ["sh.600549", "sz.000657", "sh.600111", "sh.600259",
-                 "sh.601958"],                                  # 厦钨/中钨/北方稀土/中稀有色/金钼
-    "对日制裁反制": ["sh.600549", "sz.000657", "sh.600111"],
-}
+# （如「六氟化钨出口管制」「半导体材料国产替代」），导致厦门钨业等被错误归类。
+# 人工 overlay 用来补这类主线，但它是「当前认知」，直接硬编码会前视污染回测：
+# 把 2026 年的主题套到 2020 年的回测上属于未来函数。
+#
+# 因此 overlay 改为外部数据文件 data/theme_overlay.json，每条带时间边界与证据：
+#   - effective_date  生效日（< 此日不归组）
+#   - expiry_date     失效日（> 此日不归组）
+#   - evidence_date   证据/事件日（晚于信号日则视为未来信息，跳过）
+#   - confidence      置信度（低于阈值跳过）
+#   - evidence        证据描述（可读，便于审计）
+# 回测默认禁用（BT_USE_THEME_OVERLAY=0）；若启用，必须每日按 td 加载（见 backtest.py）。
+# 实盘可用 use_overlay=True，但必须传入 as_of_date=today。
+THEME_OVERLAY_PATH = os.path.join(BASE_DIR, "data", "theme_overlay.json")
+THEME_CONFIDENCE_MIN = 0.6   # 默认置信度阈值（可被文件 _meta.confidence_threshold 覆盖）
+_OVERLAY_REQUIRED = ("theme", "codes", "effective_date", "expiry_date",
+                     "evidence_date", "confidence")
 
 
-def hot_theme_overlay(only_codes=None):
-    """返回 {bs代码: [热点概念,...]}（人工 overlay，倒排自 HOT_THEME_OVERLAY）。
-    only_codes: 限定在股票池内。"""
+def load_theme_overlay(as_of_date, path=None, only_codes=None):
+    """按信号日 as_of_date 加载有效的人工主题 overlay，返回 {bs代码: [主题,...]}。
+
+    as_of_date: 信号日（"YYYY-MM-DD"）。所有时间边界都相对它判定，杜绝前视。
+    逐条校验，任一不满足即【跳过该条】（不抛异常，安全降级）：
+      - 缺必填字段（theme/codes/effective_date/expiry_date/evidence_date/confidence）；
+      - 未生效（effective_date > as_of_date）；
+      - 已过期（expiry_date < as_of_date）；
+      - 证据日期晚于信号日（evidence_date > as_of_date，未来信息）；
+      - 置信度低于阈值（confidence < threshold）。
+    文件缺失/解析失败返回 {}。"""
+    if not as_of_date:
+        raise ValueError("load_theme_overlay 需传入 as_of_date（信号日），不可一次性加载当前 overlay")
+    path = path or THEME_OVERLAY_PATH
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+    except Exception:
+        return {}
+    meta = doc.get("_meta", {}) if isinstance(doc, dict) else {}
+    threshold = meta.get("confidence_threshold", THEME_CONFIDENCE_MIN)
+    entries = doc.get("themes", []) if isinstance(doc, dict) else []
     out = {}
-    for theme, codes in HOT_THEME_OVERLAY.items():
-        for code in codes:
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        if any(e.get(k) in (None, "", []) for k in _OVERLAY_REQUIRED):
+            continue  # 缺字段
+        try:
+            conf = float(e["confidence"])
+        except Exception:
+            continue
+        if conf < threshold:
+            continue  # 置信度不足
+        if e["effective_date"] > as_of_date:
+            continue  # 未生效
+        if e["expiry_date"] < as_of_date:
+            continue  # 已过期
+        if e["evidence_date"] > as_of_date:
+            continue  # 证据晚于信号日（未来信息）
+        theme = e["theme"]
+        for code in e["codes"]:
             if only_codes is not None and code not in only_codes:
                 continue
-            out.setdefault(code, []).append(theme)
+            lst = out.setdefault(code, [])
+            if theme not in lst:
+                lst.append(theme)
     return out
 
 
-def get_group_map(path=PANEL_DB):
+def merge_overlay(base_map, overlay):
+    """把人工 overlay 主题并入基础分组（不修改入参，返回新 dict）。
+    overlay 主题置前（优先归组），与基础概念去重保序合并。
+    base_map: {code: [概念,...]}；overlay: {code: [主题,...]}。"""
+    merged = {code: list(themes) for code, themes in base_map.items()}
+    for code, themes in overlay.items():
+        existing = merged.get(code, [])
+        merged[code] = themes + [c for c in existing if c not in themes]
+    return merged
+
+
+def get_group_map(path=PANEL_DB, as_of_date=None, use_overlay=False):
     """板块分组映射：优先用概念板块（{code: [概念,...]}），无概念缓存时退化为
     行业分类（{code: [行业名]} 单元素列表）。返回 (group_map, source)。
-    source ∈ {'concept','industry'}。供 strategy/engine 统一调用。
-    叠加 HOT_THEME_OVERLAY 当下热点概念（排在自动概念之前，优先归组）。"""
+    source ∈ {'concept','industry'}（启用 overlay 时追加 '+overlay'）。
+
+    use_overlay: 是否叠加人工主题 overlay（实盘 True / 回测默认 False）。
+    as_of_date:  信号日；use_overlay=True 时【必须】传入，按当日时间边界加载 overlay。"""
     cmap = load_concept_map(path)
-    overlay = hot_theme_overlay()
     if cmap:
-        for code, themes in overlay.items():
-            existing = cmap.get(code, [])
-            # 热点概念置前 + 去重保序
-            merged = themes + [c for c in existing if c not in themes]
-            cmap[code] = merged
-        return cmap, "concept"
-    ind = load_industry(path)
-    gmap = {code: [v] for code, v in ind.items() if v}
-    for code, themes in overlay.items():
-        gmap[code] = themes + [c for c in gmap.get(code, []) if c not in themes]
-    return gmap, "industry"
+        base, src = cmap, "concept"
+    else:
+        base = {code: [v] for code, v in load_industry(path).items() if v}
+        src = "industry"
+    if use_overlay:
+        if not as_of_date:
+            raise ValueError("get_group_map(use_overlay=True) 必须传入 as_of_date（实盘传 today）")
+        overlay = load_theme_overlay(as_of_date, only_codes=set(base) or None)
+        if overlay:
+            base = merge_overlay(base, overlay)
+            src += "+overlay"
+    return base, src
 
 
 # ==========================================================================

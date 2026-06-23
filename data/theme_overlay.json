@@ -1,0 +1,46 @@
+{
+  "_meta": {
+    "description": "人工热点主题 overlay —— 带时间边界、证据、置信度的数据输入。补自动概念源(新浪gn_*)缺失的当下主线题材。每条按信号日(as_of_date)校验：未生效/已过期/证据晚于信号日/置信度不足/缺字段 一律跳过。回测默认禁用(BT_USE_THEME_OVERLAY=0)；启用须每日按td加载。实盘 use_overlay=True 且传 today。",
+    "confidence_threshold": 0.6,
+    "schema": {
+      "theme": "贴近行情的主题名(归组用)",
+      "codes": ["bs代码列表, 如 sh.600549"],
+      "effective_date": "生效日 YYYY-MM-DD(< 此日不归组)",
+      "expiry_date": "失效日 YYYY-MM-DD(> 此日不归组)",
+      "evidence_date": "证据/事件日 YYYY-MM-DD(晚于信号日则视为未来信息,跳过)",
+      "confidence": "置信度 0~1(低于阈值跳过)",
+      "evidence": "证据描述(可审计)"
+    },
+    "updated_at": "2026-06-23",
+    "maintainer": "isabella-ferrari (后续将由定期搜索自动维护)"
+  },
+  "themes": [
+    {
+      "theme": "六氟化钨出口管制",
+      "codes": ["sh.600549", "sz.000657", "sh.601958"],
+      "effective_date": "2026-04-01",
+      "expiry_date": "2026-12-31",
+      "evidence_date": "2026-04-01",
+      "confidence": 0.7,
+      "evidence": "厦门钨业/中钨高新/金钼股份；WF6(六氟化钨)半导体材料出口管制主线（人工，待证据源核实更新）"
+    },
+    {
+      "theme": "半导体材料",
+      "codes": ["sh.600549", "sh.688353", "sz.300054", "sh.600378", "sz.000657", "sh.688268"],
+      "effective_date": "2026-04-01",
+      "expiry_date": "2026-12-31",
+      "evidence_date": "2026-04-01",
+      "confidence": 0.65,
+      "evidence": "厦钨/华盛锂电/鼎龙股份/昊华科技/中钨高新/华特气体；半导体材料国产替代主线（人工）"
+    },
+    {
+      "theme": "稀有金属管制",
+      "codes": ["sh.600549", "sz.000657", "sh.600111", "sh.600259", "sh.601958"],
+      "effective_date": "2026-04-01",
+      "expiry_date": "2026-12-31",
+      "evidence_date": "2026-04-01",
+      "confidence": 0.65,
+      "evidence": "厦钨/中钨/北方稀土/广晟有色/金钼；稀有金属出口管制主线（人工）"
+    }
+  ]
+}
