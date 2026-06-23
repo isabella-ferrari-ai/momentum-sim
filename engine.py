@@ -151,7 +151,7 @@ def process_intraday(trade_date, spot=None, log=True):
     if not positions:
         return {"sells": [], "checked": 0}
     if spot is None:
-        spot = dfetch.tx_spot([p["code"] for p in positions])
+        spot = dfetch.realtime_spot([p["code"] for p in positions])
     sells = []
     for pos in positions:
         if pos["open_date"] == trade_date:

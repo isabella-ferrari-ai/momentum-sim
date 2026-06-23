@@ -605,6 +605,34 @@ def tx_spot(codes, batch=60, pause=0.05):
     return out
 
 
+def realtime_spot(codes):
+    """统一实时快照：优先专业 A 股数据工具(financial-tool)，失败/缺项回退腾讯源。
+    返回 {bs代码: {price,preclose,high,low,pct,...}}。供盘中风控(engine.process_intraday)用。
+
+    振威 2026-06-23 要求策略程序用专业数据工具取数：实时快照改以 financial-tool 为主源，
+    腾讯源作为兜底（单源被墙/抖动时仍可用），保证盘中风控不因单点失败而漏卖。"""
+    codes = list(codes)
+    if not codes:
+        return {}
+    out = {}
+    try:
+        import financial_api as fapi
+        if fapi.available():
+            out = fapi.get_snapshots(codes) or {}
+    except Exception:
+        out = {}
+    # 主源缺失的代码用腾讯补齐（或主源整体失败时全量回退）
+    missing = [c for c in codes if c not in out or not out[c].get("price")]
+    if missing:
+        try:
+            tx = tx_spot(missing)
+            for c, q in tx.items():
+                out[c] = q
+        except Exception:
+            pass
+    return out
+
+
 def index_spot(basket=None):
     """腾讯实时宽基指数快照（看板「参考情绪」指数条用）。
     返回 [{code,name,price,pct,preclose,open,high,low,ts}, ...]，按 basket 顺序。失败返回 []。"""
