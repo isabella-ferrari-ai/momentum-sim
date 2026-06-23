@@ -39,7 +39,7 @@ tailwind.config = {
       <h1 class="text-xl sm:text-2xl font-bold tracking-tight flex items-center gap-2">
         <span class="text-accent">◆</span> 动量轮动模拟盘
       </h1>
-      <p class="text-muted text-xs sm:text-sm mt-1">热门概念板块成分股动量轮动 · ¥50万 · <span class="text-accent">T日收盘选股，T+1开盘执行（严格T+1）</span></p>
+      <p id="subtitle" class="text-muted text-xs sm:text-sm mt-1">热门概念板块成分股动量轮动 · <span class="text-accent">T日收盘选股 · 集合竞价买入 · 随时止盈止损（严格T+1）</span></p>
     </div>
     <div class="flex items-center gap-3 text-xs text-muted">
       <span id="model-badge" class="tag bg-panel2 border border-line">概念轮动</span>
@@ -108,7 +108,7 @@ tailwind.config = {
   <!-- Candidate pool -->
   <section class="card p-4 mb-5">
     <div class="flex items-center justify-between mb-3">
-      <h2 class="font-semibold text-sm">动量候选池 <span class="text-muted text-xs">热门概念板块内成分股 · 综合动量分排序 · 次日开盘执行</span></h2>
+      <h2 class="font-semibold text-sm">动量候选池 <span class="text-muted text-xs">热门概念板块内成分股 · 综合动量分排序 · 次日集合竞价买入</span></h2>
       <span id="cand-date" class="text-xs text-muted">选股日 —</span>
     </div>
     <div class="overflow-x-auto">
@@ -129,7 +129,7 @@ tailwind.config = {
     <!-- Scan log -->
     <section class="card p-4 lg:col-span-1">
       <h2 class="font-semibold text-sm mb-3 flex items-center gap-2">
-        <span class="w-2 h-2 rounded-full bg-accent pulse"></span>运行日志 <span class="text-muted text-xs">收盘后结算</span>
+        <span class="w-2 h-2 rounded-full bg-accent pulse"></span>运行日志 <span class="text-muted text-xs">收盘结算 + 盘中风控</span>
       </h2>
       <div id="scan-log" class="space-y-2 text-xs max-h-96 overflow-y-auto"></div>
     </section>
@@ -137,7 +137,7 @@ tailwind.config = {
     <!-- Trades -->
     <section class="card p-4 lg:col-span-2">
       <div class="flex items-center justify-between mb-3">
-        <h2 class="font-semibold text-sm">交易明细 <span class="text-muted text-xs">T+1开盘成交</span></h2>
+        <h2 class="font-semibold text-sm">交易明细 <span class="text-muted text-xs">买入集合竞价 · 卖出随时</span></h2>
       </div>
       <div class="overflow-x-auto max-h-96 overflow-y-auto">
         <table class="w-full text-xs sm:text-sm">
@@ -154,7 +154,7 @@ tailwind.config = {
   </div>
 
   <footer class="text-center text-muted text-[11px] py-4">
-    模拟盘仅用于策略演示，非投资建议 · 股票池：沪深300+中证500+中证1000成分股 · 概念板块：新浪概念(gn_*) · 数据源 baostock 日线 · 更新于 <span id="updated">—</span>
+    模拟盘仅用于策略演示，非投资建议 · 股票池：沪深300+中证500+中证1000成分股(当前快照) · 概念板块：新浪概念(gn_*)+人工热点overlay · 数据源 baostock 日线/腾讯实时 · 更新于 <span id="updated">—</span>
   </footer>
 </div>
 
@@ -164,12 +164,16 @@ const sign = n => n>0?'+':'';
 const colorCls = n => n>0?'text-up':(n<0?'text-down':'text-muted');
 const eYi = n => n==null?'—':(n/1e8).toFixed(2)+'亿';
 
-let equityChart, sectorChart, DB='live';
+let equityChart, sectorChart, DB='live', INIT_CAP=1000000;
 function q(u){return u+(u.includes('?')?'&':'?')+'db='+DB;}
 async function j(u){const r=await fetch(q(u));return r.json();}
 
 async function loadOverview(){
   const d = await j('/api/overview');
+  if(d.initial_capital){ INIT_CAP=d.initial_capital;
+    const sub=document.getElementById('subtitle');
+    sub.innerHTML='热门概念板块成分股动量轮动 · ¥'+(INIT_CAP/1e4).toFixed(0)+'万 · <span class="text-accent">T日收盘选股 · 集合竞价买入 · 随时止盈止损（严格T+1）</span>';
+  }
   document.getElementById('kpi-total').textContent = '¥'+fmt(d.total_equity);
   const cum = document.getElementById('kpi-cum');
   cum.textContent = sign(d.cum_return)+d.cum_return+'% 累计'; cum.className='text-xs mt-1 num '+colorCls(d.cum_return);
@@ -196,6 +200,7 @@ async function loadEquity(){
   const data = await j('/api/equity');
   const dates = data.map(x=>x.trade_date);
   const eq = data.map(x=>x.total_equity);
+  const initWan = (INIT_CAP/1e4).toFixed(0);
   equityChart.setOption({
     tooltip:{trigger:'axis',backgroundColor:'#0f1626',borderColor:'#243150',textStyle:{color:'#e6edf7'},
       formatter:p=>{const x=p[0];return x.axisValue+'<br/>总资产 ¥'+fmt(x.data);}},
@@ -207,7 +212,7 @@ async function loadEquity(){
       lineStyle:{color:'#38bdf8',width:2.5},
       areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(56,189,248,.35)'},{offset:1,color:'rgba(56,189,248,0)'}])},
       markLine:{silent:true,symbol:'none',lineStyle:{color:'#8a96ab',type:'dashed'},
-        data:[{yAxis:500000,label:{formatter:'初始50万',color:'#8a96ab',fontSize:10}}]}}]
+        data:[{yAxis:INIT_CAP,label:{formatter:'初始'+initWan+'万',color:'#8a96ab',fontSize:10}}]}}]
   });
 }
 

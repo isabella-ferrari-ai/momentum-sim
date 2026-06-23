@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""数据获取层——热门板块动量轮动（纯日线，T日收盘选股，T+1开盘执行）。
+"""数据获取层——热门板块动量轮动（日线选股+腾讯实时风控：T日收盘选股，T+1集合竞价买入，盘中随时卖出）。
 
 数据源：baostock 日线（免费、稳定，含 isST/tradestatus/turn 字段）。
 - 日线面板缓存到本地 SQLite（data/panel.db），可断点续传。
@@ -8,8 +8,8 @@
   比证监会行业分类更贴合 A 股炒作逻辑；缓存到 concept_map 表，每日收盘后刷新。
   概念获取失败时退化为 baostock query_stock_industry() 行业分类（不影响主流程）。
 
-与 trading-sim 完全独立（独立的 panel.db）。不需要实时快照——本策略不做盘中，
-每日收盘后用完整日线评估，次日开盘价执行。
+与 trading-sim 完全独立（独立的 panel.db）。日线用于收盘选股/集合竞价买入决策；
+另提供腾讯实时快照(tx_spot)供盘中实时风控随时卖出。
 """
 import warnings
 warnings.filterwarnings("ignore")
