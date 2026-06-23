@@ -156,6 +156,34 @@ def api_strategy():
     })
 
 
+@app.route("/backtest")
+def backtest_page():
+    return render_template("backtest.html")
+
+
+@app.route("/api/backtest")
+def api_backtest():
+    """读取 backtest.py 产出的回测结果 JSON。group=industry|concept。"""
+    import json
+    group = request.args.get("group", "industry")
+    path = os.path.join(BASE_DIR, "data", f"backtest_{group}.json")
+    if not os.path.exists(path):
+        return jsonify({"available": False, "group": group})
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    # equity 体积可能大，下采样到 ~400 点用于画图
+    eq = data.get("equity", [])
+    bench = data.get("bench_curves", {})
+    step = (len(eq) // 400 + 1) if len(eq) > 400 else 1
+    if step > 1:
+        eq = eq[::step] + [eq[-1]]
+        bench = {nm: (c[::step] + [c[-1]]) for nm, c in bench.items() if c}
+    return jsonify({"available": True, "group": group,
+                    "metrics": data.get("metrics", {}),
+                    "equity": eq, "bench_curves": bench,
+                    "trade_count": len(data.get("trades", []))})
+
+
 @app.route("/api/health")
 def api_health():
     return jsonify({"status": "ok", "time": datetime.now().isoformat(timespec="seconds")})

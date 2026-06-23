@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>回测研究报告 · 动量轮动</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<script>
+tailwind.config = { theme: { extend: { colors: {
+  bg:'#070b14', panel:'#0f1626', panel2:'#16203a', line:'#243150',
+  up:'#ff4d4f', down:'#13c2a2', accent:'#38bdf8', purple:'#a78bfa', gold:'#fbbf24', muted:'#8a96ab'
+}, fontFamily:{ mono:['ui-monospace','SFMono-Regular','Menlo','monospace'] } } } }
+</script>
+<style>
+  body{background:#070b14;color:#e6edf7}
+  .card{background:linear-gradient(180deg,#101a2e,#0b1120);border:1px solid #1d2942;border-radius:16px}
+  .glow{box-shadow:0 0 0 1px rgba(56,189,248,.15),0 8px 30px rgba(0,0,0,.4)}
+  .num{font-variant-numeric:tabular-nums}
+  table{border-collapse:collapse}
+  .tag{font-size:11px;padding:2px 8px;border-radius:999px}
+</style>
+</head>
+<body class="min-h-screen">
+<div class="max-w-7xl mx-auto px-3 sm:px-5 py-4 sm:py-6">
+
+  <header class="flex flex-wrap items-center justify-between gap-3 mb-4">
+    <div>
+      <h1 class="text-xl sm:text-2xl font-bold tracking-tight flex items-center gap-2">
+        <span class="text-accent">◆</span> 回测研究报告 <span class="text-muted text-sm font-normal">动量轮动 · 研究闭环</span>
+      </h1>
+      <p class="text-muted text-xs sm:text-sm mt-1">证明策略是否真的有效 · 全套绩效指标 + 基准超额 + 牛熊分段 · <a href="/" class="text-accent">← 返回实时盘</a></p>
+    </div>
+    <div class="flex items-center gap-2 text-xs">
+      <button id="btn-industry" class="tag bg-accent/20 text-accent border border-accent/40">行业分组(多年)</button>
+      <button id="btn-concept" class="tag bg-panel2 text-muted border border-line">概念分组(近一年)</button>
+    </div>
+  </header>
+
+  <!-- honesty banner -->
+  <div id="disclaimer" class="card p-3 mb-4 text-xs text-gold/90 border-gold/30" style="border-color:rgba(251,191,36,.3)">
+    ⚠️ 数据口径：universe 为<strong>当前</strong>指数成分股 → 多年回测存在<strong>幸存者偏差</strong>；
+    概念板块无历史快照，概念分组仅适用近一年样本外前向验证。多年趋势以<strong>行业分组</strong>证明 alpha 来源。
+  </div>
+
+  <div id="empty" class="card p-8 text-center text-muted hidden">该分组回测结果尚未生成（正在拉取历史数据 / 运行回测中）。</div>
+
+  <div id="report">
+    <!-- KPI -->
+    <section class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+      <div class="card glow p-4"><div class="text-muted text-xs">总收益 / 年化</div>
+        <div id="k-total" class="text-2xl font-bold num mt-1">—</div>
+        <div id="k-cagr" class="text-xs mt-1 num text-accent">—</div></div>
+      <div class="card p-4"><div class="text-muted text-xs">最大回撤 / Calmar</div>
+        <div id="k-mdd" class="text-2xl font-bold num mt-1 text-up">—</div>
+        <div id="k-calmar" class="text-xs mt-1 num text-muted">—</div></div>
+      <div class="card p-4"><div class="text-muted text-xs">Sharpe / Sortino</div>
+        <div id="k-sharpe" class="text-2xl font-bold num mt-1">—</div>
+        <div id="k-sortino" class="text-xs mt-1 num text-muted">—</div></div>
+      <div class="card p-4"><div class="text-muted text-xs">胜率 / 盈亏比</div>
+        <div id="k-win" class="text-2xl font-bold num mt-1">—</div>
+        <div id="k-pf" class="text-xs mt-1 num text-muted">—</div></div>
+    </section>
+    <section class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+      <div class="card p-3"><div class="text-muted text-[11px]">平均盈利 / 亏损</div><div id="k-wl" class="text-sm font-semibold num mt-1">—</div></div>
+      <div class="card p-3"><div class="text-muted text-[11px]">平均持仓天数</div><div id="k-hold" class="text-sm font-semibold num mt-1">—</div></div>
+      <div class="card p-3"><div class="text-muted text-[11px]">年换手</div><div id="k-turn" class="text-sm font-semibold num mt-1">—</div></div>
+      <div class="card p-3"><div class="text-muted text-[11px]">交易笔数 / 区间</div><div id="k-tc" class="text-sm font-semibold num mt-1">—</div></div>
+    </section>
+
+    <!-- equity vs bench -->
+    <section class="card p-4 mb-5">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-semibold text-sm">策略净值 vs 基准 <span class="text-muted text-xs">归一化到初始资金</span></h2>
+        <div id="src-badge" class="text-xs text-muted">—</div>
+      </div>
+      <div id="equity-chart" style="height:320px"></div>
+    </section>
+
+    <div class="grid lg:grid-cols-2 gap-5 mb-5">
+      <section class="card p-4">
+        <h2 class="font-semibold text-sm mb-3">分年度收益</h2>
+        <div id="yearly-chart" style="height:240px"></div>
+      </section>
+      <section class="card p-4">
+        <h2 class="font-semibold text-sm mb-3">牛熊震荡分段表现 <span class="text-muted text-xs">以沪深300趋势划分</span></h2>
+        <div id="regime-body" class="text-sm"></div>
+      </section>
+    </div>
+
+    <!-- monthly heatmap -->
+    <section class="card p-4 mb-5">
+      <h2 class="font-semibold text-sm mb-3">月度收益热力图 <span class="text-muted text-xs">%</span></h2>
+      <div id="heatmap-chart" style="height:260px"></div>
+    </section>
+
+    <!-- excess -->
+    <section class="card p-4 mb-5">
+      <h2 class="font-semibold text-sm mb-3">相对基准超额收益</h2>
+      <div class="overflow-x-auto"><table class="w-full text-xs sm:text-sm">
+        <thead class="text-muted text-left"><tr class="border-b border-line">
+          <th class="py-2 pr-2">基准</th><th class="pr-2">策略累计</th><th class="pr-2">基准累计</th>
+          <th class="pr-2">累计超额</th><th class="pr-2">策略年化</th><th class="pr-2">基准年化</th><th class="pr-2">年化超额</th>
+        </tr></thead><tbody id="excess-body"></tbody>
+      </table></div>
+    </section>
+  </div>
+
+  <footer class="text-center text-muted text-[11px] py-4">回测仅用于研究，非投资建议 · 数据源 baostock 日线</footer>
+</div>
+
+<script>
+const fmt=n=>(n==null?'—':Number(n).toLocaleString('zh-CN',{maximumFractionDigits:2}));
+const sgn=n=>n>0?'+':'';
+const cc=n=>n>0?'text-up':(n<0?'text-down':'text-muted');
+let GROUP='industry', eqChart, yrChart, hmChart;
+
+async function load(){
+  const r=await fetch('/api/backtest?group='+GROUP); const d=await r.json();
+  document.getElementById('empty').classList.toggle('hidden', d.available);
+  document.getElementById('report').classList.toggle('hidden', !d.available);
+  if(!d.available) return;
+  const m=d.metrics;
+  document.getElementById('src-badge').textContent='分组:'+(m.group_source||'—')+' · '+(m.start||'')+'~'+(m.end||'');
+  document.getElementById('k-total').textContent=sgn(m.total_return_pct)+m.total_return_pct+'%';
+  document.getElementById('k-total').className='text-2xl font-bold num mt-1 '+cc(m.total_return_pct);
+  document.getElementById('k-cagr').textContent='年化 '+sgn(m.cagr_pct)+m.cagr_pct+'%';
+  document.getElementById('k-mdd').textContent=m.max_drawdown_pct+'%';
+  document.getElementById('k-calmar').textContent='Calmar '+m.calmar;
+  document.getElementById('k-sharpe').textContent=m.sharpe;
+  document.getElementById('k-sortino').textContent='Sortino '+m.sortino;
+  document.getElementById('k-win').textContent=m.win_rate+'%';
+  document.getElementById('k-pf').textContent='盈亏比 '+m.profit_factor;
+  document.getElementById('k-wl').innerHTML='<span class="text-up">'+sgn(m.avg_win_pct)+m.avg_win_pct+'%</span> / <span class="text-down">'+m.avg_loss_pct+'%</span>';
+  document.getElementById('k-hold').textContent=m.avg_hold_days+' 天';
+  document.getElementById('k-turn').textContent=m.annual_turnover+' x/年';
+  document.getElementById('k-tc').textContent=m.trade_count+' 笔 · '+m.days+'日';
+
+  // equity overlay
+  const eq=d.equity||[]; const dates=eq.map(x=>x.trade_date);
+  const series=[{name:'策略',type:'line',smooth:true,symbol:'none',data:eq.map(x=>x.total_equity),
+    lineStyle:{color:'#38bdf8',width:2.5},
+    areaStyle:{color:new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'rgba(56,189,248,.30)'},{offset:1,color:'rgba(56,189,248,0)'}])}}];
+  const palette={'沪深300':'#fbbf24','中证1000':'#a78bfa','上证综指':'#8a96ab'};
+  Object.entries(d.bench_curves||{}).forEach(([nm,c])=>{
+    series.push({name:nm,type:'line',smooth:true,symbol:'none',data:c.map(x=>x.value),
+      lineStyle:{color:palette[nm]||'#666',width:1.3,type:'dashed'}});
+  });
+  eqChart.setOption({
+    tooltip:{trigger:'axis',backgroundColor:'#0f1626',borderColor:'#243150',textStyle:{color:'#e6edf7'}},
+    legend:{top:0,textStyle:{color:'#8a96ab',fontSize:10},data:series.map(s=>s.name)},
+    grid:{left:60,right:20,top:30,bottom:30},
+    xAxis:{type:'category',data:dates,axisLine:{lineStyle:{color:'#243150'}},axisLabel:{color:'#8a96ab',fontSize:9}},
+    yAxis:{type:'value',scale:true,axisLabel:{color:'#8a96ab',fontSize:10,formatter:v=>(v/1e4).toFixed(0)+'万'},splitLine:{lineStyle:{color:'#16203a'}}},
+    series},true);
+
+  // yearly
+  const yr=m.yearly||{}; const yk=Object.keys(yr).sort();
+  yrChart.setOption({
+    tooltip:{trigger:'axis',axisPointer:{type:'shadow'},backgroundColor:'#0f1626',borderColor:'#243150',textStyle:{color:'#e6edf7'}},
+    grid:{left:50,right:20,top:15,bottom:25},
+    xAxis:{type:'category',data:yk,axisLabel:{color:'#cbd5e1'},axisLine:{lineStyle:{color:'#243150'}}},
+    yAxis:{type:'value',axisLabel:{color:'#8a96ab',fontSize:10,formatter:v=>v+'%'},splitLine:{lineStyle:{color:'#16203a'}}},
+    series:[{type:'bar',data:yk.map(k=>({value:yr[k],itemStyle:{color:yr[k]>=0?'#ff4d4f':'#13c2a2',borderRadius:[4,4,0,0]}})),
+      barWidth:'50%',label:{show:true,position:'top',color:'#cbd5e1',fontSize:10,formatter:p=>p.value+'%'}}]
+  },true);
+
+  // regimes
+  const rg=m.regimes||{}; const order=['牛','震荡','熊'];
+  document.getElementById('regime-body').innerHTML=order.filter(k=>rg[k]).map(k=>{
+    const v=rg[k]; const col=v.cum_pct>0?'text-up':(v.cum_pct<0?'text-down':'text-muted');
+    return `<div class="flex items-center justify-between py-2 border-b border-line/40">
+      <span class="tag ${k=='牛'?'bg-up/20 text-up':k=='熊'?'bg-down/20 text-down':'bg-panel2 text-muted'}">${k}市</span>
+      <span class="num ${col}">${sgn(v.cum_pct)}${v.cum_pct}%</span>
+      <span class="text-muted text-xs num">${v.days}日 · 日均${sgn(v.avg_daily_pct)}${v.avg_daily_pct}%</span></div>`;
+  }).join('')||'<div class="text-muted text-xs">无数据</div>';
+
+  // heatmap
+  const hm=m.monthly_heatmap||{}; const years=Object.keys(hm).sort();
+  const months=[1,2,3,4,5,6,7,8,9,10,11,12];
+  const cells=[]; let mx=1;
+  years.forEach((y,yi)=>months.forEach((mo,mi)=>{
+    const v=(hm[y]||{})[mo]; if(v!=null){cells.push([mi,yi,v]); mx=Math.max(mx,Math.abs(v));}
+  }));
+  hmChart.setOption({
+    tooltip:{position:'top',backgroundColor:'#0f1626',borderColor:'#243150',textStyle:{color:'#e6edf7'},
+      formatter:p=>years[p.value[1]]+'年'+months[p.value[0]]+'月: '+p.value[2]+'%'},
+    grid:{left:50,right:20,top:10,bottom:50},
+    xAxis:{type:'category',data:months.map(m=>m+'月'),axisLabel:{color:'#8a96ab',fontSize:9},splitArea:{show:true}},
+    yAxis:{type:'category',data:years,axisLabel:{color:'#cbd5e1',fontSize:10},splitArea:{show:true}},
+    visualMap:{min:-mx,max:mx,calculable:true,orient:'horizontal',left:'center',bottom:5,
+      inRange:{color:['#13c2a2','#0f1626','#ff4d4f']},textStyle:{color:'#8a96ab',fontSize:9}},
+    series:[{type:'heatmap',data:cells,label:{show:true,color:'#e6edf7',fontSize:9,formatter:p=>p.value[2]},
+      itemStyle:{borderColor:'#0b1120',borderWidth:1}}]
+  },true);
+
+  // excess
+  const ex=m.excess||{};
+  document.getElementById('excess-body').innerHTML=Object.entries(ex).map(([nm,e])=>{
+    if(!e) return '';
+    return `<tr class="border-b border-line/40"><td class="py-2 pr-2">${nm}</td>
+      <td class="pr-2 num ${cc(e.strat_cum_pct)}">${sgn(e.strat_cum_pct)}${e.strat_cum_pct}%</td>
+      <td class="pr-2 num ${cc(e.bench_cum_pct)}">${sgn(e.bench_cum_pct)}${e.bench_cum_pct}%</td>
+      <td class="pr-2 num font-semibold ${cc(e.excess_cum_pct)}">${sgn(e.excess_cum_pct)}${e.excess_cum_pct}%</td>
+      <td class="pr-2 num ${cc(e.strat_cagr_pct)}">${sgn(e.strat_cagr_pct)}${e.strat_cagr_pct}%</td>
+      <td class="pr-2 num ${cc(e.bench_cagr_pct)}">${sgn(e.bench_cagr_pct)}${e.bench_cagr_pct}%</td>
+      <td class="pr-2 num font-semibold ${cc(e.excess_cagr_pct)}">${sgn(e.excess_cagr_pct)}${e.excess_cagr_pct}%</td></tr>`;
+  }).join('')||'<tr><td colspan="7" class="py-4 text-center text-muted">无基准数据</td></tr>';
+}
+
+function setGroup(g){
+  GROUP=g;
+  document.getElementById('btn-industry').className='tag '+(g=='industry'?'bg-accent/20 text-accent border border-accent/40':'bg-panel2 text-muted border border-line');
+  document.getElementById('btn-concept').className='tag '+(g=='concept'?'bg-accent/20 text-accent border border-accent/40':'bg-panel2 text-muted border border-line');
+  load();
+}
+
+window.addEventListener('load',()=>{
+  eqChart=echarts.init(document.getElementById('equity-chart'));
+  yrChart=echarts.init(document.getElementById('yearly-chart'));
+  hmChart=echarts.init(document.getElementById('heatmap-chart'));
+  window.addEventListener('resize',()=>{eqChart.resize();yrChart.resize();hmChart.resize();});
+  document.getElementById('btn-industry').onclick=()=>setGroup('industry');
+  document.getElementById('btn-concept').onclick=()=>setGroup('concept');
+  load();
+});
+</script>
+</body>
+</html>

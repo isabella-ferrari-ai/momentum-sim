@@ -227,16 +227,18 @@ def _passes_filters(c, name):
 # 主入口：选股
 # ==========================================================================
 def select_momentum_candidates(panel, names, group_map, trade_date,
-                               top_n=TOP_N_CANDIDATES, return_context=False):
+                               top_n=TOP_N_CANDIDATES, return_context=False, facts=None):
     """每日收盘选股主函数。
     1. 全市场算因子 -> 2. 概念热度(Top30%) -> 3. 个股归最热概念并评分 -> 4. 过滤+同概念≤3 -> Top N。
     group_map: {code: [概念,...]}（概念分组）或 {code: 行业名}（退化）。
-    return_context=True 时额外返回 (hot_sectors, sector_stats, full_scored) 供卖出判定与展示。"""
-    facts = {}
-    for code, df in panel.items():
-        f = compute_factors(df, trade_date)
-        if f is not None:
-            facts[code] = f
+    return_context=True 时额外返回 (hot_sectors, sector_stats, full_scored) 供卖出判定与展示。
+    facts: 预计算好的 {code: factor_dict}（回测加速用，传入则跳过逐股计算）。"""
+    if facts is None:
+        facts = {}
+        for code, df in panel.items():
+            f = compute_factors(df, trade_date)
+            if f is not None:
+                facts[code] = f
 
     sector_stats, hot_sectors = compute_sector_heat(facts, group_map)
     scored = score_universe(facts, group_map, sector_stats, hot_sectors)
