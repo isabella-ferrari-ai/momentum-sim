@@ -20,10 +20,16 @@ import database as db
 import data_fetcher as dfetch
 import engine
 import strategy as st
+import trend as tr
 
 CHECK_INTERVAL = 10 * 60   # 每10分钟检查一次（收盘后等日线就绪）
 SIM_START = os.environ.get("SIM_START", "2026-06-23")
 PANEL_LOOKBACK_DAYS = 40   # 动量计算所需近端历史
+
+# 市场择时（趋势总闸）——回测择优: 沪深300 MA200 迟滞±3%
+TREND_BENCH = "sh.000300"
+TREND_PARAMS = dict(mode="ma_hysteresis", win=200, band=0.03)
+TREND_LOOKBACK_DAYS = 420   # MA200 需 ~200 交易日，留足日历缓冲
 
 
 def _now():
@@ -74,6 +80,22 @@ def _ensure_concept_map(td):
         db.log_scan("概念异常", f"{repr(e)[:120]}", trade_date=td)
 
 
+def _compute_trend(td):
+    """拉沪深300长周期收盘，算 MA200 迟滞趋势状态，返回 {date: bool}。失败返回 None。
+    需在 baostock 会话内调用（复用 settle_close 的 session）。"""
+    try:
+        start = (datetime.strptime(td, "%Y-%m-%d")
+                 - timedelta(days=TREND_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+        df = dfetch.get_index(start, td, code=TREND_BENCH)
+        if df is None or df.empty:
+            return None
+        closes = {r["date"]: float(r["close"]) for _, r in df.iterrows()}
+        return tr.compute_states(closes, **TREND_PARAMS)
+    except Exception as e:
+        db.log_scan("趋势异常", f"{repr(e)[:120]}", trade_date=td)
+        return None
+
+
 def _is_trade_day(td):
     try:
         with dfetch.bs_session():
@@ -106,15 +128,34 @@ def settle_close(td):
     with dfetch.bs_session():
         index_df = dfetch.get_index(SIM_START, td)
         dates = [d for d in dfetch.get_trade_dates(SIM_START, td) if d in set(dfetch.panel_dates())]
+        trend_states = _compute_trend(td)
     if td not in dates:
         # SIM_START 当日可能不在区间，补进
         if td not in dates:
             dates = sorted(set(dates) | {td})
-    res = engine.process_day(panel, names, group_map, index_df, dates, td, log=True)
+
+    # 趋势总闸：D 收盘状态 + 上一交易日收盘状态（控开仓/退守）
+    trend_on = trend_on_prev = None
+    if trend_states:
+        prev_td = dates[dates.index(td) - 1] if td in dates and dates.index(td) > 0 else None
+        trend_on = tr.state_on(trend_states, td)
+        trend_on_prev = tr.state_on(trend_states, prev_td) if prev_td else trend_on
+        db.set_meta("trend", {
+            "date": td, "on": bool(trend_on),
+            "bench": "沪深300", "rule": "MA200迟滞±3%",
+            "on_pct_recent": tr.describe(trend_states)["on_pct"],
+        })
+        db.log_scan("趋势择时",
+                    f"{td} 沪深300 MA200迟滞±3% -> {'ON可交易' if trend_on else 'OFF退守现金'}",
+                    trade_date=td)
+
+    res = engine.process_day(panel, names, group_map, index_df, dates, td, log=True,
+                             trend_on=trend_on, trend_on_prev=trend_on_prev)
     db.log_scan("结算完成",
                 f"{td} 热门板块{len(res['hot_sectors'])} "
                 f"买{len(res['buys'])}卖{len(res['sells'])} "
-                f"持仓{len(db.get_positions())}/{st.MAX_POSITIONS} 候选{len(res['candidates'])}",
+                f"持仓{len(db.get_positions())}/{st.MAX_POSITIONS} 候选{len(res['candidates'])}"
+                f"{'' if trend_on is None else (' 趋势ON' if trend_on else ' 趋势OFF退守')}",
                 trade_date=td)
 
 

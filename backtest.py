@@ -172,9 +172,11 @@ class Portfolio:
 
 
 def run(panel, names, group_map, dates, start=None, end=None,
-        prog_every=60, log=True):
+        prog_every=60, log=True, trend_states=None):
     """跑回测。dates 为升序交易日全集；start/end 限定回测区间（含）。
+    trend_states: {date: bool} 市场择时状态（None=不择时）。OFF 时不开新仓且清仓退守现金。
     返回 dict(equity, trades, candidates_last)。"""
+    import trend as tr
     pf = Portfolio()
     if log:
         print(f"[bt] precomputing factors for {len(panel)} stocks ...", flush=True)
@@ -213,7 +215,10 @@ def run(panel, names, group_map, dates, start=None, end=None,
                 del pf.pending[code]
 
         # 3) 买入执行：上一交易日候选在 D 开盘价买入（等权，最多10只）
-        if prev_date and prev_cands:
+        #    择时：仅当「上一交易日收盘」趋势 ON 才允许开新仓（与候选同源 T+1）
+        trend_ok_prev = (trend_states is None) or (
+            prev_date is not None and tr.state_on(trend_states, prev_date))
+        if prev_date and prev_cands and trend_ok_prev:
             for c in prev_cands:
                 if len(pf.positions) >= st.MAX_POSITIONS:
                     break
@@ -232,6 +237,8 @@ def run(panel, names, group_map, dates, start=None, end=None,
                        f"动量候选#{c.get('rank', '')} {c.get('industry')}")
 
         # 4) 更新持仓现价 + 卖出决策（D收盘判定，标记 pending）
+        #    择时：D 收盘趋势 OFF -> 全部持仓退守（次日开盘清仓），优先于个股卖出逻辑
+        trend_off = (trend_states is not None) and (not tr.state_on(trend_states, td))
         for code, p in list(pf.positions.items()):
             row = _row(code, td)
             if row is not None:
@@ -239,6 +246,9 @@ def run(panel, names, group_map, dates, start=None, end=None,
                 p["last_price"] = row["close"]
             if p["open_date"] == td:
                 continue  # T+1 当日不决策
+            if trend_off:
+                pf.pending[code] = "大盘趋势破坏-退守现金"
+                continue
             do_sell, reason = st.evaluate_sell(p, row, td, hot, top30)
             if do_sell:
                 pf.pending[code] = reason
@@ -297,7 +307,18 @@ def main():
     print(f"[bt] codes={len(panel)} dates={len(dates)} group_src={src} "
           f"({dates[0]}~{dates[-1]})")
 
-    res = run(panel, names, gmap, dates, start=start, end=end)
+    # 趋势总闸（BT_TREND=1 启用，默认与实盘一致：沪深300 MA200迟滞±3%）
+    trend_states = None
+    if os.environ.get("BT_TREND") == "1":
+        import trend as tr
+        with dfetch.bs_session():
+            idf = dfetch.get_index(dates[0], dates[-1], code="sh.000300")
+        closes = {r["date"]: float(r["close"]) for _, r in idf.iterrows()}
+        trend_states = tr.compute_states(closes, mode="ma_hysteresis", win=200, band=0.03)
+        src += "+趋势MA200迟滞±3%"
+        print(f"[bt] trend filter ON: {tr.describe(trend_states)}")
+
+    res = run(panel, names, gmap, dates, start=start, end=end, trend_states=trend_states)
     eq = res["equity"]
     if not eq:
         print("[bt] no equity produced"); return

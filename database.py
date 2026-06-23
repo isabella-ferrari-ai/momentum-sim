@@ -131,6 +131,14 @@ def init_db():
             signals TEXT
         )
     """)
+    # 通用键值（趋势择时状态等）
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS meta (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at TEXT
+        )
+    """)
     conn.commit()
     row = c.execute("SELECT * FROM account WHERE id=1").fetchone()
     if row is None:
@@ -334,6 +342,34 @@ def get_sector_heat(trade_date=None, only_hot=False, limit=40):
     rows = conn.execute(q, (trade_date, limit)).fetchall()
     conn.close()
     return {"trade_date": trade_date, "items": [dict(r) for r in rows]}
+
+
+# --------------------------- 通用键值 ---------------------------
+def set_meta(key, value):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO meta (key,value,updated_at) VALUES (?,?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        (key, json.dumps(value, ensure_ascii=False),
+         datetime.now().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_meta(key, default=None):
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    except Exception:
+        row = None
+    conn.close()
+    if not row:
+        return default
+    try:
+        return json.loads(row["value"])
+    except Exception:
+        return default
 
 
 # --------------------------- 扫描日志 ---------------------------

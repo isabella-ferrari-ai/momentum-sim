@@ -134,9 +134,12 @@ def update_equity(trade_date):
 # ==========================================================================
 # 单交易日处理（回测/收盘结算共用）
 # ==========================================================================
-def process_day(panel, names, group_map, index_df, dates, trade_date, log=True):
+def process_day(panel, names, group_map, index_df, dates, trade_date, log=True,
+                trend_on=None, trend_on_prev=None):
     """处理交易日 trade_date(=D)。决策在 D 收盘，执行在 D 开盘（用 prev 的决策）。
-    group_map: {code: [概念,...]}（概念分组）或 {code: 行业名}（退化）。"""
+    group_map: {code: [概念,...]}（概念分组）或 {code: 行业名}（退化）。
+    trend_on:      D 收盘大盘趋势状态（None=不择时）。OFF 时本日收盘标记全部持仓退守。
+    trend_on_prev: 上一交易日收盘趋势状态。OFF 时本日开盘不开新仓（与候选 T+1 同源）。"""
     prev = _prev_date(dates, trade_date)
 
     # 1) D 日因子/概念热度/评分（供本日卖出决策、选股、展示）
@@ -165,7 +168,9 @@ def process_day(panel, names, group_map, index_df, dates, trade_date, log=True):
             sells.append(t)
 
     # 3) 买入执行：prev 候选池在 D 开盘价买入（等权，最多 10 只）
-    if prev:
+    #    择时：上一交易日收盘趋势 OFF 则今日开盘不开新仓（退守现金）
+    allow_buy = (trend_on_prev is None) or bool(trend_on_prev)
+    if prev and allow_buy:
         cand_prev = db.get_candidates(prev)
         held = {p["code"] for p in db.get_positions()}
         for c in cand_prev:
@@ -190,6 +195,8 @@ def process_day(panel, names, group_map, index_df, dates, trade_date, log=True):
                 held.add(code)
 
     # 4) 卖出决策：用 D 收盘价更新持仓状态 + 判定，命中则标记 pending（次日开盘执行）
+    #    择时：D 收盘趋势 OFF 则全部持仓退守（次日开盘清仓），优先于个股卖出逻辑
+    trend_off = (trend_on is not None) and (not trend_on)
     for pos in db.get_positions():
         row = _row_at(panel, pos["code"], trade_date)
         if row is not None:
@@ -198,6 +205,9 @@ def process_day(panel, names, group_map, index_df, dates, trade_date, log=True):
             pos["last_price"] = row["close"]
         if pos["open_date"] == trade_date:
             continue  # T+1 当日不决策卖出
+        if trend_off:
+            db.set_pending_sell(pos["code"], True, "大盘趋势破坏-退守现金")
+            continue
         do_sell, reason = st.evaluate_sell(pos, row, trade_date, hot_sectors, top30)
         if do_sell:
             db.set_pending_sell(pos["code"], True, reason)
@@ -209,11 +219,13 @@ def process_day(panel, names, group_map, index_df, dates, trade_date, log=True):
     update_equity(trade_date)
 
     if log:
+        tflag = "" if trend_on is None else (" 趋势ON" if trend_on else " 趋势OFF退守")
         db.log_scan("收盘处理",
                     f"{trade_date} 热门板块{len(hot_sectors)} 买{len(buys)}卖{len(sells)} "
-                    f"持仓{len(db.get_positions())}/{st.MAX_POSITIONS} 新候选{len(cands)}",
+                    f"持仓{len(db.get_positions())}/{st.MAX_POSITIONS} 新候选{len(cands)}{tflag}",
                     signals={"buys": [b["code"] for b in buys], "sells": [s["code"] for s in sells],
                              "hot_sectors": sorted(hot_sectors)},
                     trade_date=trade_date)
     return {"buys": buys, "sells": sells, "candidates": cands,
-            "hot_sectors": hot_sectors, "sector_stats": sector_stats}
+            "hot_sectors": hot_sectors, "sector_stats": sector_stats,
+            "trend_on": trend_on}

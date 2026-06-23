@@ -43,6 +43,7 @@ tailwind.config = {
     </div>
     <div class="flex items-center gap-3 text-xs text-muted">
       <span id="model-badge" class="tag bg-panel2 border border-line">概念轮动</span>
+      <span id="trend-badge" class="tag bg-panel2 border border-line" title="沪深300 MA200迟滞±3% 趋势总闸">趋势 —</span>
       <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent pulse"></span><span id="clock">--:--:--</span></span>
     </div>
   </header>
@@ -182,6 +183,13 @@ async function loadOverview(){
   const rz=document.getElementById('realized'); rz.textContent='¥'+fmt(d.realized_pnl); rz.className='num '+colorCls(d.realized_pnl);
   const fl=document.getElementById('floating'); fl.textContent='¥'+fmt(d.floating_pnl); fl.className='num '+colorCls(d.floating_pnl);
   document.getElementById('updated').textContent=d.updated_at||'—';
+  const tb=document.getElementById('trend-badge');
+  if(d.trend){
+    const on=d.trend.on;
+    tb.textContent=(on?'趋势 ON 可交易':'趋势 OFF 退守现金')+' · '+(d.trend.rule||'');
+    tb.className='tag border '+(on?'bg-up/20 text-up border-up/40':'bg-down/20 text-down border-down/40');
+    tb.title='基准'+(d.trend.bench||'沪深300')+' · '+(d.trend.date||'')+' · 近端在场'+(d.trend.on_pct_recent??'-')+'%';
+  } else { tb.textContent='趋势 —'; }
 }
 
 async function loadEquity(){

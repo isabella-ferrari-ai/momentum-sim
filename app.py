@@ -74,6 +74,7 @@ def api_overview():
         "avg_loss_pct": round(avg_loss, 2),
         "max_drawdown": round(mdd * 100, 2),
         "updated_at": acct.get("updated_at"),
+        "trend": db.get_meta("trend"),
     })
 
 
@@ -147,6 +148,7 @@ def api_strategy():
         "stop_loss": st.STOP_LOSS,
         "hold_max_days": st.HOLD_MAX_DAYS,
         "rank_exit_pct": st.RANK_EXIT_PCT,
+        "trend_filter": "沪深300 MA200 迟滞±3%（趋势OFF不开新仓且清仓退守现金）",
         "factors": [
             {"name": "MOM_5", "weight": st.W_MOM5, "desc": "过去5日涨幅"},
             {"name": "MOM_20", "weight": st.W_MOM20, "desc": "过去20日涨幅(去最近1日)"},
