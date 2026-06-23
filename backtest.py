@@ -311,12 +311,16 @@ def main():
     trend_states = None
     if os.environ.get("BT_TREND") == "1":
         import trend as tr
+        from datetime import datetime, timedelta
+        # 多拉 ~420 日历日的前置，保证回测窗口起点 MA200 已成型（短窗口回测尤其重要）
+        ws = (start or dates[0])
+        lb = (datetime.strptime(ws, "%Y-%m-%d") - timedelta(days=420)).strftime("%Y-%m-%d")
         with dfetch.bs_session():
-            idf = dfetch.get_index(dates[0], dates[-1], code="sh.000300")
+            idf = dfetch.get_index(lb, dates[-1], code="sh.000300")
         closes = {r["date"]: float(r["close"]) for _, r in idf.iterrows()}
         trend_states = tr.compute_states(closes, mode="ma_hysteresis", win=200, band=0.03)
         src += "+趋势MA200迟滞±3%"
-        print(f"[bt] trend filter ON: {tr.describe(trend_states)}")
+        print(f"[bt] trend filter ON (lookback {lb}): {tr.describe(trend_states)}")
 
     res = run(panel, names, gmap, dates, start=start, end=end, trend_states=trend_states)
     eq = res["equity"]
