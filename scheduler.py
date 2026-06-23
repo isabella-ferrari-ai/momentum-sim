@@ -161,10 +161,14 @@ def settle_close(td):
                 trade_date=td)
 
 
+_last_heartbeat = {"ts": None}
+HEARTBEAT_INTERVAL = 15 * 60   # 盘中扫描心跳日志间隔（看板可见「正在每15分钟扫描」）
+
+
 def intraday_risk_scan(td):
     """盘中实时风控扫描：符合止损/止盈/高点回撤的持仓随时卖出（不等次日开盘）。
     买入只在集合竞价（次日开盘，由 settle_close 决定候选 + process_day 开盘成交），
-    卖出则任意时段可触发。"""
+    卖出则任意时段可触发。无卖出时每 15 分钟打一条心跳日志，看板可见扫描在运行。"""
     if td < SIM_START:
         return
     positions = db.get_positions()
@@ -177,6 +181,19 @@ def intraday_risk_scan(td):
             db.log_scan("盘中卖出",
                         f"{td} 实时风控触发卖出 {len(res['sells'])} 只：{names}",
                         trade_date=td)
+            _last_heartbeat["ts"] = _now()
+            return
+        # 无卖出：每 15 分钟打一条心跳（看板可见扫描在运行），含 T+1 锁仓只数
+        now = _now()
+        last = _last_heartbeat["ts"]
+        if last is None or (now - last).total_seconds() >= HEARTBEAT_INTERVAL:
+            locked = sum(1 for p in positions if p.get("open_date") == td)
+            sellable = len(positions) - locked
+            db.log_scan("盘中扫描",
+                        f"{td} {now.strftime('%H:%M')} 实时风控扫描{len(positions)}只持仓，"
+                        f"无触发卖出（T+1锁仓{locked}只，可卖{sellable}只）",
+                        trade_date=td)
+            _last_heartbeat["ts"] = now
     except Exception as e:
         db.log_scan("盘中风控异常", f"{repr(e)[:120]}", trade_date=td)
 
