@@ -4,7 +4,9 @@
 数据源：baostock 日线（免费、稳定，含 isST/tradestatus/turn 字段）。
 - 日线面板缓存到本地 SQLite（data/panel.db），可断点续传。
 - 股票池：沪深300 + 中证500 + 中证1000 成分股并集（约 1800 只）。
-- 行业分类：baostock query_stock_industry()，用于板块热度分组。
+- 板块分组：新浪概念板块（gn_*），跨行业短线题材（机器人/低空经济/算力/华为等），
+  比证监会行业分类更贴合 A 股炒作逻辑；缓存到 concept_map 表，每日收盘后刷新。
+  概念获取失败时退化为 baostock query_stock_industry() 行业分类（不影响主流程）。
 
 与 trading-sim 完全独立（独立的 panel.db）。不需要实时快照——本策略不做盘中，
 每日收盘后用完整日线评估，次日开盘价执行。
@@ -14,7 +16,9 @@ warnings.filterwarnings("ignore")
 
 import os
 import time
+import json
 import sqlite3
+import urllib.request
 from contextlib import contextmanager
 
 import baostock as bs
@@ -220,6 +224,11 @@ def _panel_init(conn):
             PRIMARY KEY (code, start, end)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS concept_map (
+            code TEXT PRIMARY KEY, concepts TEXT, fetched_date TEXT
+        )
+    """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bars_date ON bars(date)")
     conn.commit()
 
@@ -316,6 +325,116 @@ def get_industry_map(path=PANEL_DB):
     return load_industry(path)
 
 
+# --------------------------------------------------------------------------
+# 概念板块（新浪源）——跨行业短线题材，板块热度分组的首选
+# --------------------------------------------------------------------------
+_SINA_REF = "https://finance.sina.com.cn"
+_SINA_CLASS = "https://vip.stock.finance.sina.com.cn/q/view/newFLJK.php?param=class"
+_SINA_NODE = ("https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+              "Market_Center.getHQNodeData?page=1&num=1000&sort=symbol&asc=0&node={node}&symbol=&_s_r_a=page")
+
+
+def _sina_get(url, tries=3, timeout=15):
+    import ssl
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    for _ in range(tries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": _SINA_REF})
+            return urllib.request.urlopen(req, timeout=timeout, context=ctx).read().decode("gbk", "ignore")
+        except Exception:
+            time.sleep(0.5)
+    return None
+
+
+def fetch_concept_map(only_codes=None):
+    """抓取 {bs代码: [概念名,...]} 概念板块映射（新浪源）。
+
+    新浪概念板块（gn_*）覆盖跨行业短线题材（机器人/低空经济/算力/华为等），
+    比证监会行业分类更贴合 A 股炒作逻辑。
+    only_codes: 限定输出在该股票池内（bs 代码集合）以减小体积；None 则全量。
+    任何网络异常都安全降级（失败的板块跳过，整体不抛异常）。
+    返回 dict 可能为空（首次/被墙时），调用方退化为行业分类。"""
+    import re
+    cls = _sina_get(_SINA_CLASS)
+    if not cls:
+        return {}
+    # 解析: "gn_xxx":"gn_xxx,概念名,成分数,..."
+    boards = re.findall(r'"(gn_[A-Za-z0-9]+)":"gn_[A-Za-z0-9]+,([^,]+),', cls)
+    cmap = {}
+    for node, name in boards:
+        js = _sina_get(_SINA_NODE.format(node=node))
+        if not js:
+            continue
+        for sym in re.findall(r'"symbol":"(s[hz]\d{6})"', js):
+            bs_code = sym[:2] + "." + sym[2:]   # shXXXXXX -> sh.XXXXXX
+            if only_codes is not None and bs_code not in only_codes:
+                continue
+            cmap.setdefault(bs_code, []).append(name)
+        time.sleep(0.03)
+    return cmap
+
+
+def refresh_concept_map(fetched_date, only_codes=None, path=PANEL_DB):
+    """抓取并落库概念映射到 concept_map 表（每天收盘后一次）。
+    成功返回写入条数；失败（被墙）返回 0，保留旧缓存不动。"""
+    cmap = fetch_concept_map(only_codes=only_codes)
+    if not cmap:
+        return 0
+    conn = _panel_conn(path)
+    _panel_init(conn)
+    conn.execute("DELETE FROM concept_map")
+    conn.executemany(
+        "INSERT OR REPLACE INTO concept_map(code,concepts,fetched_date) VALUES(?,?,?)",
+        [(code, json.dumps(cs, ensure_ascii=False), fetched_date) for code, cs in cmap.items()],
+    )
+    conn.commit()
+    conn.close()
+    return len(cmap)
+
+
+def load_concept_map(path=PANEL_DB):
+    """读出 {baostock代码: [概念,...]}（板块热度分组用）。无缓存时返回 {}。"""
+    try:
+        conn = _panel_conn(path)
+        rows = conn.execute("SELECT code, concepts FROM concept_map").fetchall()
+        conn.close()
+    except Exception:
+        return {}
+    out = {}
+    for code, cs in rows:
+        try:
+            lst = json.loads(cs) if cs else []
+        except Exception:
+            lst = []
+        if lst:
+            out[code] = lst
+    return out
+
+
+def concept_map_date(path=PANEL_DB):
+    """返回 concept_map 缓存日期（最新一行），无则 None。"""
+    try:
+        conn = _panel_conn(path)
+        row = conn.execute("SELECT fetched_date FROM concept_map LIMIT 1").fetchone()
+        conn.close()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def get_group_map(path=PANEL_DB):
+    """板块分组映射：优先用概念板块（{code: [概念,...]}），无概念缓存时退化为
+    行业分类（{code: [行业名]} 单元素列表）。返回 (group_map, source)。
+    source ∈ {'concept','industry'}。供 strategy/engine 统一调用。"""
+    cmap = load_concept_map(path)
+    if cmap:
+        return cmap, "concept"
+    ind = load_industry(path)
+    return {code: [v] for code, v in ind.items() if v}, "industry"
+
+
 def panel_dates(path=PANEL_DB):
     conn = _panel_conn(path)
     rows = conn.execute("SELECT DISTINCT date FROM bars ORDER BY date").fetchall()
@@ -362,6 +481,11 @@ if __name__ == "__main__":
         build_panel(s, e)
     elif len(sys.argv) >= 2 and sys.argv[1] == "industry":
         backfill_industry()
+    elif len(sys.argv) >= 2 and sys.argv[1] == "concept":
+        d = sys.argv[2] if len(sys.argv) > 2 else pd.Timestamp("now").strftime("%Y-%m-%d")
+        uni = set(universe_codes())
+        n = refresh_concept_map(d, only_codes=uni or None)
+        print(f"[concept] {n} 只股票概念映射已缓存 (date={concept_map_date()})")
     else:
         with bs_session():
             print("trade dates sample:", get_trade_dates("2026-06-01", "2026-06-22"))

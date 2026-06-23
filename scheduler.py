@@ -59,6 +59,21 @@ def _ensure_recent_panel(td, force=False):
         db.log_scan("面板刷新异常", f"{repr(e)[:120]}", trade_date=td)
 
 
+def _ensure_concept_map(td):
+    """每日收盘后刷新概念板块映射（新浪源）。失败则保留旧缓存、退化为行业分类，不影响主流程。"""
+    try:
+        if dfetch.concept_map_date() == td:
+            return
+        uni = set(dfetch.universe_codes())
+        n = dfetch.refresh_concept_map(td, only_codes=uni or None)
+        if n:
+            db.log_scan("概念刷新", f"{td} 概念板块映射已更新 {n} 只(新浪源)", trade_date=td)
+        else:
+            db.log_scan("概念降级", f"{td} 概念抓取失败/被墙，沿用旧缓存或退化为行业分类", trade_date=td)
+    except Exception as e:
+        db.log_scan("概念异常", f"{repr(e)[:120]}", trade_date=td)
+
+
 def _is_trade_day(td):
     try:
         with dfetch.bs_session():
@@ -85,8 +100,9 @@ def settle_close(td):
     if td not in set(dfetch.panel_dates()):
         db.log_scan("等待数据", f"{td} 日线未就绪(收盘后约15:30更新)，稍后重试", trade_date=td)
         return
+    _ensure_concept_map(td)
     panel, names = dfetch.load_panel()
-    industry_map = dfetch.get_industry_map()
+    group_map, src = dfetch.get_group_map()
     with dfetch.bs_session():
         index_df = dfetch.get_index(SIM_START, td)
         dates = [d for d in dfetch.get_trade_dates(SIM_START, td) if d in set(dfetch.panel_dates())]
@@ -94,7 +110,7 @@ def settle_close(td):
         # SIM_START 当日可能不在区间，补进
         if td not in dates:
             dates = sorted(set(dates) | {td})
-    res = engine.process_day(panel, names, industry_map, index_df, dates, td, log=True)
+    res = engine.process_day(panel, names, group_map, index_df, dates, td, log=True)
     db.log_scan("结算完成",
                 f"{td} 热门板块{len(res['hot_sectors'])} "
                 f"买{len(res['buys'])}卖{len(res['sells'])} "

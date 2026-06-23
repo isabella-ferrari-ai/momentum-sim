@@ -134,13 +134,14 @@ def update_equity(trade_date):
 # ==========================================================================
 # 单交易日处理（回测/收盘结算共用）
 # ==========================================================================
-def process_day(panel, names, industry_map, index_df, dates, trade_date, log=True):
-    """处理交易日 trade_date(=D)。决策在 D 收盘，执行在 D 开盘（用 prev 的决策）。"""
+def process_day(panel, names, group_map, index_df, dates, trade_date, log=True):
+    """处理交易日 trade_date(=D)。决策在 D 收盘，执行在 D 开盘（用 prev 的决策）。
+    group_map: {code: [概念,...]}（概念分组）或 {code: 行业名}（退化）。"""
     prev = _prev_date(dates, trade_date)
 
-    # 1) D 日因子/板块热度/评分（供本日卖出决策、选股、展示）
+    # 1) D 日因子/概念热度/评分（供本日卖出决策、选股、展示）
     cands, hot_sectors, sector_stats, scored = st.select_momentum_candidates(
-        panel, names, industry_map, trade_date, return_context=True)
+        panel, names, group_map, trade_date, return_context=True)
     db.save_sector_heat(trade_date, sector_stats)
     top30 = st.top_rank_codes(scored)
 

@@ -1,17 +1,23 @@
 # -*- coding: utf-8 -*-
-"""策略引擎——热门板块成分股动量轮动（T日收盘选股，T+1开盘执行）。
+"""策略引擎——热门概念板块成分股动量轮动（T日收盘选股，T+1开盘执行）。
+
+板块分组用「概念板块」（新浪 gn_*：机器人/低空经济/算力/华为汽车等跨行业短线题材），
+比证监会行业分类更贴合 A 股炒作逻辑。一只股票可属于多个概念，归到其「最热概念」分组。
+概念数据获取失败时退化为行业分类（每股一个分组），主流程不变。
 
 选股流程（每日收盘）
 ====================
-1. 板块热度：用申万/证监会行业分组，算各行业过去 5/20 日平均涨幅，取 Top 30% 热门板块；
-2. 个股动量评分（仅在热门板块内）：
+1. 板块热度：把每只股票计入其所属的每个概念，算各概念过去 5/20 日平均涨幅，取 Top 30% 热门概念；
+2. 个股归组：一只股票可属多个热门概念，取其中「最热概念」作为该股分组；
+3. 个股动量评分（仅在热门概念内）：
      MOM_5      20%   过去 5 日涨幅
      MOM_20     30%   过去 20 日涨幅（去掉最近 1 日）
      量价共振   25%   近 5 日量能扩张 × 上涨（放量上涨）
-     相对板块强度 25% 个股 MOM_20 - 所在板块平均 MOM_20
-   各因子在板块内排名归一化到 0-1，加权求综合分；
-3. 选股：全市场综合分 Top 20 候选，过滤停牌/ST/成交额<1亿/跌停，同一行业最多 3 只；
-4. 卖出：板块跌出热门 Top30% / 个股排名跌出全市场 Top30% / 回撤>-8% / 持有>15自然日。
+     相对板块强度 25% 个股 MOM_20 - 所在概念平均 MOM_20
+   各因子在概念内排名归一化到 0-1，加权求综合分；
+4. 选股：全市场综合分 Top 20 候选，过滤停牌/ST/成交额<1亿/跌停，同一概念最多 3 只，
+   同一股票去重（按最高分保留）；
+5. 卖出：所属概念跌出热门 Top30% / 个股排名跌出全市场 Top30% / 回撤>-8% / 持有>15自然日。
 
 执行：T 日收盘生成候选 -> T+1 开盘价买入（严格 T+1，不做盘中）。
 """
@@ -24,16 +30,16 @@ import data_fetcher as dfetch
 # ----------------------------- 资金/持仓约束 -----------------------------
 MAX_POSITIONS = 10           # 同时最多持有
 POSITION_PCT = 0.10          # 单票等权 10%
-MAX_PER_INDUSTRY = 3         # 同一行业最多持有/候选数（分散）
+MAX_PER_GROUP = 3            # 同一概念最多持有/候选数（分散）
 
 # ----------------------------- 选股参数 -----------------------------
-TOP_SECTOR_PCT = 0.30        # 热门板块比例（Top 30%）
+TOP_SECTOR_PCT = 0.30        # 热门概念比例（Top 30%）
 TOP_N_CANDIDATES = 20        # 候选池规模
 MIN_AMOUNT = 1e8             # 日成交额 > 1 亿（流动性）
 MIN_BARS = 25                # 计算动量所需最少历史日数
-SECTOR_MIN_MEMBERS = 3       # 板块至少 N 只成分才参与热度排名
+SECTOR_MIN_MEMBERS = 5       # 概念至少 N 只成分才参与热度排名（概念股池更大，门槛抬高去噪）
 
-# 因子权重（综合分 = 各因子板块内归一化排名 × 权重）
+# 因子权重（综合分 = 各因子概念内归一化排名 × 权重）
 W_MOM5 = 0.20
 W_MOM20 = 0.30
 W_VOLPRICE = 0.25
@@ -56,7 +62,7 @@ def _bars_upto(df, trade_date):
 
 def compute_factors(df, trade_date):
     """对单只股票计算动量因子。返回 dict 或 None（数据不足/当日无bar/停牌）。
-    因子: mom5, mom20, vol_price, （rel_str 需板块均值，稍后填）以及当日行情快照。"""
+    因子: mom5, mom20, vol_price, （rel_str 需概念均值，稍后填）以及当日行情快照。"""
     sub = _bars_upto(df, trade_date)
     if len(sub) < MIN_BARS:
         return None
@@ -93,38 +99,58 @@ def compute_factors(df, trade_date):
 
 
 # ==========================================================================
-# 板块热度
+# 概念板块热度
 # ==========================================================================
-def compute_sector_heat(facts, industry_map):
-    """用各股因子按行业聚合，算板块过去 5/20 日平均涨幅。
-    facts: {code: factor_dict}。返回 (sector_stats, hot_sectors)。
-    sector_stats: {industry: {mom5, mom20, count}}；hot_sectors: 热门(Top30%)行业集合。"""
+def _concepts_of(group_map, code):
+    """取 code 的概念列表（兼容 group_map 值为 list 或单个字符串）。"""
+    v = group_map.get(code)
+    if not v:
+        return []
+    return v if isinstance(v, list) else [v]
+
+
+def compute_sector_heat(facts, group_map):
+    """把每只股票计入其所属的每个概念，算各概念过去 5/20 日平均涨幅。
+    facts: {code: factor_dict}；group_map: {code: [概念,...]}。
+    返回 (sector_stats, hot_sectors)。
+    sector_stats: {概念: {mom5, mom20, count, heat, hot}}；hot_sectors: 热门(Top30%)概念集合。"""
     buckets = {}
     for code, f in facts.items():
-        ind = industry_map.get(code)
-        if not ind:
-            continue
-        buckets.setdefault(ind, []).append(f)
+        for cpt in _concepts_of(group_map, code):
+            buckets.setdefault(cpt, []).append(f)
     stats = {}
-    for ind, fs in buckets.items():
+    for cpt, fs in buckets.items():
         if len(fs) < SECTOR_MIN_MEMBERS:
             continue
         m5 = sum(x["mom5"] for x in fs) / len(fs)
         m20 = sum(x["mom20"] for x in fs) / len(fs)
-        stats[ind] = {"mom5": m5, "mom20": m20, "count": len(fs)}
+        # 热度 = 5日与20日均涨幅的综合（5日权重高些，捕捉近期发酵）
+        stats[cpt] = {"mom5": m5, "mom20": m20, "count": len(fs),
+                      "heat": m5 * 0.6 + m20 * 0.4}
     if not stats:
         return {}, set()
-    # 热度 = 5日与20日均涨幅的综合（5日权重高些，捕捉近期发酵）
-    ranked = sorted(stats.items(), key=lambda kv: kv[1]["mom5"] * 0.6 + kv[1]["mom20"] * 0.4, reverse=True)
+    ranked = sorted(stats.items(), key=lambda kv: kv[1]["heat"], reverse=True)
     n_hot = max(1, int(round(len(ranked) * TOP_SECTOR_PCT)))
-    hot = {ind for ind, _ in ranked[:n_hot]}
-    for ind, _ in ranked[:n_hot]:
-        stats[ind]["hot"] = True
+    hot = {cpt for cpt, _ in ranked[:n_hot]}
+    for cpt in hot:
+        stats[cpt]["hot"] = True
     return stats, hot
 
 
+def assign_group(group_map, code, sector_stats, hot_sectors):
+    """给 code 归组：在其所属【热门】概念中取最热（heat 最高）的那个。
+    若它不属于任何热门概念，返回 None。"""
+    best, best_heat = None, None
+    for cpt in _concepts_of(group_map, code):
+        if cpt in hot_sectors:
+            h = sector_stats[cpt]["heat"]
+            if best_heat is None or h > best_heat:
+                best, best_heat = cpt, h
+    return best
+
+
 # ==========================================================================
-# 个股评分（板块内归一化排名）
+# 个股评分（概念内归一化排名）
 # ==========================================================================
 def _rank_norm(values):
     """把一组数值转为 0-1 的百分位排名（值越大排名越高）。返回与输入等长 list。"""
@@ -138,20 +164,20 @@ def _rank_norm(values):
     return norm
 
 
-def score_universe(facts, industry_map, sector_stats, hot_sectors):
-    """对热门板块内个股计算综合动量分。返回 list[dict]（含 code/industry/score/各因子）。
-    各因子在所属板块内归一化排名(0-1)后加权。相对板块强度 = 个股 MOM_20 - 板块均 MOM_20。"""
-    # 按热门板块分桶
-    by_sector = {}
+def score_universe(facts, group_map, sector_stats, hot_sectors):
+    """对热门概念内个股计算综合动量分。每只股票归到其最热概念（去重），返回 list[dict]。
+    各因子在所属概念内归一化排名(0-1)后加权。相对板块强度 = 个股 MOM_20 - 概念均 MOM_20。"""
+    # 每只股票归到唯一的最热概念
+    by_group = {}
     for code, f in facts.items():
-        ind = industry_map.get(code)
-        if not ind or ind not in hot_sectors:
+        grp = assign_group(group_map, code, sector_stats, hot_sectors)
+        if grp is None:
             continue
-        by_sector.setdefault(ind, []).append((code, f))
+        by_group.setdefault(grp, []).append((code, f))
 
     scored = []
-    for ind, items in by_sector.items():
-        sec_mom20 = sector_stats[ind]["mom20"]
+    for grp, items in by_group.items():
+        sec_mom20 = sector_stats[grp]["mom20"]
         codes = [c for c, _ in items]
         fs = [f for _, f in items]
         rel = [f["mom20"] - sec_mom20 for f in fs]
@@ -164,7 +190,7 @@ def score_universe(facts, industry_map, sector_stats, hot_sectors):
                      + W_VOLPRICE * r_vp[k] + W_RELSTR * r_rel[k])
             f = fs[k]
             scored.append({
-                "code": code, "industry": ind,
+                "code": code, "industry": grp,   # industry 字段沿用：此处为概念名
                 "score": round(score * 100, 2),
                 "mom5": round(f["mom5"] * 100, 2),
                 "mom20": round(f["mom20"] * 100, 2),
@@ -175,7 +201,9 @@ def score_universe(facts, industry_map, sector_stats, hot_sectors):
                 "amount": f["amount"], "turn": round(f["turn"], 2),
                 "isST": f["isST"],
             })
-    scored.sort(key=lambda x: x["score"], reverse=True)
+    # 概念内排名归一化会让每个概念头部都拿满分（小概念尤甚），
+    # 故并列时以原始 MOM_20 为次序键，保证候选排序有意义。
+    scored.sort(key=lambda x: (x["score"], x["mom20"]), reverse=True)
     return scored
 
 
@@ -198,10 +226,11 @@ def _passes_filters(c, name):
 # ==========================================================================
 # 主入口：选股
 # ==========================================================================
-def select_momentum_candidates(panel, names, industry_map, trade_date,
+def select_momentum_candidates(panel, names, group_map, trade_date,
                                top_n=TOP_N_CANDIDATES, return_context=False):
     """每日收盘选股主函数。
-    1. 全市场算因子 -> 2. 板块热度(Top30%) -> 3. 热门板块内评分 -> 4. 过滤+同行业≤3 -> Top N。
+    1. 全市场算因子 -> 2. 概念热度(Top30%) -> 3. 个股归最热概念并评分 -> 4. 过滤+同概念≤3 -> Top N。
+    group_map: {code: [概念,...]}（概念分组）或 {code: 行业名}（退化）。
     return_context=True 时额外返回 (hot_sectors, sector_stats, full_scored) 供卖出判定与展示。"""
     facts = {}
     for code, df in panel.items():
@@ -209,24 +238,28 @@ def select_momentum_candidates(panel, names, industry_map, trade_date,
         if f is not None:
             facts[code] = f
 
-    sector_stats, hot_sectors = compute_sector_heat(facts, industry_map)
-    scored = score_universe(facts, industry_map, sector_stats, hot_sectors)
+    sector_stats, hot_sectors = compute_sector_heat(facts, group_map)
+    scored = score_universe(facts, group_map, sector_stats, hot_sectors)
 
-    # 过滤 + 同行业最多 3 只 + Top N
+    # 过滤 + 同概念最多 3 只 + 同股去重 + Top N
     cands = []
-    per_ind = {}
+    per_grp = {}
+    seen = set()
     for c in scored:
+        if c["code"] in seen:          # 同股去重（scored 已按分降序，保留最高分那条）
+            continue
         name = names.get(c["code"])
         ok, why = _passes_filters(c, name)
         if not ok:
             continue
-        ind = c["industry"]
-        if per_ind.get(ind, 0) >= MAX_PER_INDUSTRY:
+        grp = c["industry"]
+        if per_grp.get(grp, 0) >= MAX_PER_GROUP:
             continue
-        per_ind[ind] = per_ind.get(ind, 0) + 1
+        per_grp[grp] = per_grp.get(grp, 0) + 1
+        seen.add(c["code"])
         cands.append({
             **c, "name": name, "strategy_type": "动量轮动",
-            "reason": f"{ind}热门板块 动量分{c['score']} "
+            "reason": f"{grp}热门概念 动量分{c['score']} "
                       f"(M5={c['mom5']}%/M20={c['mom20']}%/量比{c['vol_ratio5']}/相对强度{c['rel_str']}%)",
         })
         if len(cands) >= top_n:
@@ -274,10 +307,10 @@ def evaluate_sell(pos, row, current_date, hot_sectors, top30_codes):
     # 2) 最长持有到期
     if days >= HOLD_MAX_DAYS:
         return True, f"持有{days}天到期(≥15)清仓"
-    # 3) 所在板块跌出热门 Top30%
-    ind = pos.get("theme")
-    if ind and hot_sectors and ind not in hot_sectors:
-        return True, f"板块[{ind}]跌出热门Top30%"
+    # 3) 所属概念跌出热门 Top30%
+    grp = pos.get("theme")
+    if grp and hot_sectors and grp not in hot_sectors:
+        return True, f"概念[{grp}]跌出热门Top30%"
     # 4) 个股综合分跌出全市场 Top30%
     if top30_codes and pos["code"] not in top30_codes:
         return True, "个股排名跌出全市场Top30%"

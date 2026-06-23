@@ -114,7 +114,9 @@ def api_trades():
 def api_candidates():
     _select_db()
     sd = request.args.get("date")
-    return jsonify({"signal_date": sd, "items": db.get_candidates(sd, limit=20)})
+    items = db.get_candidates(sd, limit=20)
+    actual_sd = sd or (items[0]["signal_date"] if items else None)
+    return jsonify({"signal_date": actual_sd, "items": items})
 
 
 @app.route("/api/sectors")
@@ -134,11 +136,11 @@ def api_scan_log():
 def api_strategy():
     _select_db()
     return jsonify({
-        "model": "热门板块成分股动量轮动 — T日收盘选股，T+1开盘执行",
+        "model": "热门概念板块成分股动量轮动 — T日收盘选股，T+1开盘执行",
         "initial_capital": db.INITIAL_CAPITAL,
         "max_positions": st.MAX_POSITIONS,
         "position_pct": st.POSITION_PCT,
-        "max_per_industry": st.MAX_PER_INDUSTRY,
+        "max_per_group": st.MAX_PER_GROUP,
         "top_sector_pct": st.TOP_SECTOR_PCT,
         "top_n_candidates": st.TOP_N_CANDIDATES,
         "min_amount": st.MIN_AMOUNT,
@@ -149,7 +151,7 @@ def api_strategy():
             {"name": "MOM_5", "weight": st.W_MOM5, "desc": "过去5日涨幅"},
             {"name": "MOM_20", "weight": st.W_MOM20, "desc": "过去20日涨幅(去最近1日)"},
             {"name": "量价共振", "weight": st.W_VOLPRICE, "desc": "近5日量能扩张×上涨"},
-            {"name": "相对板块强度", "weight": st.W_RELSTR, "desc": "个股MOM20-板块均MOM20"},
+            {"name": "相对板块强度", "weight": st.W_RELSTR, "desc": "个股MOM20-概念均MOM20"},
         ],
     })
 

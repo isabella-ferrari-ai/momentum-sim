@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>动量轮动模拟盘 · 热门板块成分股动量轮动</title>
+<title>动量轮动模拟盘 · 热门概念板块成分股动量轮动</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 <script>
@@ -39,10 +39,10 @@ tailwind.config = {
       <h1 class="text-xl sm:text-2xl font-bold tracking-tight flex items-center gap-2">
         <span class="text-accent">◆</span> 动量轮动模拟盘
       </h1>
-      <p class="text-muted text-xs sm:text-sm mt-1">热门板块成分股动量轮动 · ¥50万 · <span class="text-accent">T日收盘选股，T+1开盘执行（严格T+1）</span></p>
+      <p class="text-muted text-xs sm:text-sm mt-1">热门概念板块成分股动量轮动 · ¥50万 · <span class="text-accent">T日收盘选股，T+1开盘执行（严格T+1）</span></p>
     </div>
     <div class="flex items-center gap-3 text-xs text-muted">
-      <span id="model-badge" class="tag bg-panel2 border border-line">板块轮动</span>
+      <span id="model-badge" class="tag bg-panel2 border border-line">概念轮动</span>
       <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent pulse"></span><span id="clock">--:--:--</span></span>
     </div>
   </header>
@@ -99,7 +99,7 @@ tailwind.config = {
 
     <!-- Sector heat -->
     <section class="card p-4">
-      <h2 class="font-semibold text-sm mb-3">板块热度 <span class="text-muted text-xs">行业近5/20日均涨幅 · 热门Top30%(高亮)</span></h2>
+      <h2 class="font-semibold text-sm mb-3">概念热度 <span class="text-muted text-xs">概念板块近5/20日均涨幅 · 热门Top30%(高亮)</span></h2>
       <div id="sector-chart" style="height:300px"></div>
     </section>
   </div>
@@ -107,14 +107,14 @@ tailwind.config = {
   <!-- Candidate pool -->
   <section class="card p-4 mb-5">
     <div class="flex items-center justify-between mb-3">
-      <h2 class="font-semibold text-sm">动量候选池 <span class="text-muted text-xs">热门板块内成分股 · 综合动量分排序 · 次日开盘执行</span></h2>
+      <h2 class="font-semibold text-sm">动量候选池 <span class="text-muted text-xs">热门概念板块内成分股 · 综合动量分排序 · 次日开盘执行</span></h2>
       <span id="cand-date" class="text-xs text-muted">选股日 —</span>
     </div>
     <div class="overflow-x-auto">
       <table class="w-full text-xs sm:text-sm">
         <thead class="text-muted text-left">
           <tr class="border-b border-line">
-            <th class="py-2 pr-2">#</th><th class="pr-2">股票</th><th class="pr-2">行业</th>
+            <th class="py-2 pr-2">#</th><th class="pr-2">股票</th><th class="pr-2">概念</th>
             <th class="pr-2">MOM5</th><th class="pr-2">MOM20</th><th class="pr-2">量比</th>
             <th class="pr-2">相对强度</th><th class="pr-2">换手</th><th class="pr-2">成交额</th><th class="pr-2">动量分</th>
           </tr>
@@ -153,7 +153,7 @@ tailwind.config = {
   </div>
 
   <footer class="text-center text-muted text-[11px] py-4">
-    模拟盘仅用于策略演示，非投资建议 · 股票池：沪深300+中证500+中证1000成分股 · 数据源 baostock 日线 · 更新于 <span id="updated">—</span>
+    模拟盘仅用于策略演示，非投资建议 · 股票池：沪深300+中证500+中证1000成分股 · 概念板块：新浪概念(gn_*) · 数据源 baostock 日线 · 更新于 <span id="updated">—</span>
   </footer>
 </div>
 
