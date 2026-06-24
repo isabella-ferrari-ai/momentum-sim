@@ -15,7 +15,7 @@
      量价共振   25%   近 5 日量能扩张 × 上涨（放量上涨）
      相对板块强度 25% 个股 MOM_20 - 所在概念平均 MOM_20
    各因子在概念内排名归一化到 0-1，加权求综合分；
-4. 选股：全市场综合分 Top 20 候选，过滤停牌/ST/成交额<1亿/跌停，同一概念最多 3 只，
+4. 选股：全市场综合分 Top 20 候选，过滤停牌/ST/近20日均成交额<3亿/跌停，同一概念最多 3 只，
    同一股票去重（按最高分保留）；
 5. 卖出：成本止损-8% / 固定止盈+30% / 高点回撤-12%(浮盈+8%后启用) / 概念退出 /
    个股排名跌出全市场 Top30% / 持有>15自然日。
@@ -38,7 +38,8 @@ MAX_PER_GROUP = 3            # 同一概念最多持有/候选数（分散）
 # ----------------------------- 选股参数 -----------------------------
 TOP_SECTOR_PCT = 0.30        # 热门概念比例（Top 30%）
 TOP_N_CANDIDATES = 20        # 候选池规模
-MIN_AMOUNT = 1e8             # 日成交额 > 1 亿（流动性）
+MIN_AMOUNT = 3e8             # 近20日均成交额 > 3 亿（流动性；剔除易操纵/难出货低质标的）
+AMT_AVG_WIN = 20             # 日均成交额窗口（个交易日）
 MIN_BARS = 25                # 计算动量所需最少历史日数
 SECTOR_MIN_MEMBERS = 5       # 概念至少 N 只成分才参与热度排名（概念股池更大，门槛抬高去噪）
 
@@ -93,6 +94,11 @@ def compute_factors(df, trade_date):
     vol_ratio5 = (v_recent / v_base) if v_base > 0 else 1.0
     vol_price = vol_ratio5 * (1.0 + max(mom5, 0.0))
 
+    # 近 AMT_AVG_WIN 日均成交额（流动性过滤口径，比单日稳）
+    amts = sub["amount"].values[-AMT_AVG_WIN:]
+    amts = amts[amts > 0]
+    amount_avg = float(amts.mean()) if len(amts) else 0.0
+
     return {
         "mom5": float(mom5),
         "mom20": float(mom20),
@@ -102,6 +108,7 @@ def compute_factors(df, trade_date):
         "open": float(last["open"]),
         "pctChg": float(last.get("pctChg") or 0),
         "amount": float(last.get("amount") or 0),
+        "amount_avg": amount_avg,
         "turn": float(last.get("turn") or 0),
         "isST": int(last.get("isST") or 0),
     }
@@ -207,7 +214,8 @@ def score_universe(facts, group_map, sector_stats, hot_sectors):
                 "rel_str": round(rel[k] * 100, 2),
                 "close": f["close"], "open": f["open"],
                 "pctChg": round(f["pctChg"], 2),
-                "amount": f["amount"], "turn": round(f["turn"], 2),
+                "amount": f["amount"], "amount_avg": f.get("amount_avg", 0.0),
+                "turn": round(f["turn"], 2),
                 "isST": f["isST"],
             })
     # 概念内排名归一化会让每个概念头部都拿满分（小概念尤甚），
@@ -224,8 +232,9 @@ def _passes_filters(c, name):
     nm = (name or "")
     if c["isST"] or "ST" in nm.upper() or "退" in nm:
         return False, "ST/退市"
-    if c["amount"] < MIN_AMOUNT:
-        return False, f"成交额{c['amount']/1e8:.2f}亿<1亿"
+    amt_avg = c.get("amount_avg") or c.get("amount") or 0
+    if amt_avg < MIN_AMOUNT:
+        return False, f"日均成交额{amt_avg/1e8:.2f}亿<{MIN_AMOUNT/1e8:.0f}亿"
     limit = dfetch.limit_pct(c["code"])
     if c["pctChg"] <= -(limit * 100 - 0.5):
         return False, "跌停"
