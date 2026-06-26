@@ -29,7 +29,7 @@ import strategy as st
 import trend as tr
 
 CHECK_INTERVAL = 10 * 60       # 默认检查间隔（收盘后等日线就绪）
-INTRADAY_INTERVAL = 2 * 60     # 盘中实时风控间隔（随时卖出需更高频）
+INTRADAY_INTERVAL = 15 * 60    # 盘中扫描间隔（三策略统一为15分钟）
 SIM_START = os.environ.get("SIM_START", "2026-06-23")
 PANEL_LOOKBACK_DAYS = 40   # 动量计算所需近端历史
 
