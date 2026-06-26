@@ -4,9 +4,10 @@
 数据源：baostock 日线（免费、稳定，含 isST/tradestatus/turn 字段）。
 - 日线面板缓存到本地 SQLite（data/panel.db），可断点续传。
 - 股票池：沪深300 + 中证500 + 中证1000 成分股并集（约 1800 只）。
-- 板块分组：新浪概念板块（gn_*），跨行业短线题材（机器人/低空经济/算力/华为等），
-  比证监会行业分类更贴合 A 股炒作逻辑；缓存到 concept_map 表，每日收盘后刷新。
-  概念获取失败时退化为 baostock query_stock_industry() 行业分类（不影响主流程）。
+- 板块分组：概念板块（跨行业短线题材，机器人/低空经济/算力/华为等），比证监会行业
+  分类更贴合 A 股炒作逻辑；缓存到 concept_map 表，每日收盘后刷新。
+  概念源优先东方财富(clean JSON)，被墙降级新浪 gn_*；两者均失败再退化为 baostock
+  query_stock_industry() 行业分类（不影响主流程）。
 
 与 trading-sim 完全独立（独立的 panel.db）。日线用于收盘选股/集合竞价买入决策；
 另提供腾讯实时快照(tx_spot)供盘中实时风控随时卖出。
@@ -338,7 +339,7 @@ def get_industry_map(path=PANEL_DB):
 
 
 # --------------------------------------------------------------------------
-# 概念板块（新浪源）——跨行业短线题材，板块热度分组的首选
+# 概念板块（新浪源）——跨行业短线题材；在 fetch_concept_map_best 中作东财的降级源
 # --------------------------------------------------------------------------
 _SINA_REF = "https://finance.sina.com.cn"
 _SINA_CLASS = "https://vip.stock.finance.sina.com.cn/q/view/newFLJK.php?param=class"
@@ -388,12 +389,77 @@ def fetch_concept_map(only_codes=None):
     return cmap
 
 
+# --------------------------------------------------------------------------
+# 概念板块（东方财富源）——首选：clist JSON 接口，板块覆盖最全、字段干净
+# 注：东方财富 push2 接口在本环境被 GFW 墙（RemoteDisconnected），任何失败都
+# 安全降级（返回 {}）由 fetch_concept_map_best 转用新浪；换无墙主机/网络恢复时自动接管。
+# --------------------------------------------------------------------------
+_EM_REF = "https://quote.eastmoney.com/"
+_EM_LIST = ("https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=600&po=1&np=1"
+            "&fid=f3&fs=m:90+t:3&fields=f12,f14")          # 概念板块列表(m:90 t:3)
+_EM_CONS = ("https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=1500&po=1&np=1"
+            "&fid=f3&fs=b:{bk}+f:!50&fields=f12,f13")       # 板块成分(b:BKxxxx)
+
+
+def _em_get(url, tries=3, timeout=12):
+    for _ in range(tries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": _EM_REF})
+            txt = urllib.request.urlopen(req, timeout=timeout).read().decode("utf-8", "ignore")
+            return json.loads(txt)
+        except Exception:
+            time.sleep(0.5)
+    return None
+
+
+def fetch_concept_map_eastmoney(only_codes=None):
+    """抓取 {bs代码: [概念名,...]} 概念板块映射（东方财富源）。
+    任何网络异常安全降级（失败的板块跳过，整体不抛异常）；被墙时返回 {}。"""
+    js = _em_get(_EM_LIST)
+    try:
+        boards = (js or {}).get("data", {}).get("diff", []) or []
+    except Exception:
+        boards = []
+    cmap = {}
+    for b in boards:
+        bk = b.get("f12"); name = b.get("f14")
+        if not bk or not name:
+            continue
+        cjs = _em_get(_EM_CONS.format(bk=bk))
+        try:
+            members = (cjs or {}).get("data", {}).get("diff", []) or []
+        except Exception:
+            members = []
+        for m in members:
+            code = m.get("f12"); mkt = m.get("f13")
+            if not code or mkt not in (0, 1):
+                continue
+            bs_code = ("sh." if mkt == 1 else "sz.") + code   # f13: 1=沪 0=深
+            if only_codes is not None and bs_code not in only_codes:
+                continue
+            cmap.setdefault(bs_code, []).append(name)
+        time.sleep(0.03)
+    return cmap
+
+
+def fetch_concept_map_best(only_codes=None):
+    """按优先级抓概念映射：东方财富(首选) -> 新浪(降级)。返回 (cmap, source)。
+    source ∈ {'eastmoney','sina',''}（'' 表示全部失败/被墙，调用方保留旧缓存）。"""
+    cmap = fetch_concept_map_eastmoney(only_codes=only_codes)
+    if cmap:
+        return cmap, "eastmoney"
+    cmap = fetch_concept_map(only_codes=only_codes)   # 新浪降级
+    if cmap:
+        return cmap, "sina"
+    return {}, ""
+
+
 def refresh_concept_map(fetched_date, only_codes=None, path=PANEL_DB):
     """抓取并落库概念映射到 concept_map 表（每天收盘后一次）。
-    成功返回写入条数；失败（被墙）返回 0，保留旧缓存不动。"""
-    cmap = fetch_concept_map(only_codes=only_codes)
+    优先东方财富，被墙降级新浪。返回 (写入条数, 源名)；全失败返回 (0, '') 并保留旧缓存。"""
+    cmap, source = fetch_concept_map_best(only_codes=only_codes)
     if not cmap:
-        return 0
+        return 0, ""
     conn = _panel_conn(path)
     _panel_init(conn)
     conn.execute("DELETE FROM concept_map")
@@ -403,7 +469,7 @@ def refresh_concept_map(fetched_date, only_codes=None, path=PANEL_DB):
     )
     conn.commit()
     conn.close()
-    return len(cmap)
+    return len(cmap), source
 
 
 def load_concept_map(path=PANEL_DB):
@@ -741,8 +807,8 @@ if __name__ == "__main__":
     elif len(sys.argv) >= 2 and sys.argv[1] == "concept":
         d = sys.argv[2] if len(sys.argv) > 2 else pd.Timestamp("now").strftime("%Y-%m-%d")
         uni = set(universe_codes())
-        n = refresh_concept_map(d, only_codes=uni or None)
-        print(f"[concept] {n} 只股票概念映射已缓存 (date={concept_map_date()})")
+        n, source = refresh_concept_map(d, only_codes=uni or None)
+        print(f"[concept] {n} 只股票概念映射已缓存 源={source or '无(全失败)'} (date={concept_map_date()})")
     else:
         with bs_session():
             print("trade dates sample:", get_trade_dates("2026-06-01", "2026-06-22"))

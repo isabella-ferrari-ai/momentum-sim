@@ -73,16 +73,18 @@ def _ensure_recent_panel(td, force=False):
 
 
 def _ensure_concept_map(td):
-    """每日收盘后刷新概念板块映射（新浪源）。失败则保留旧缓存、退化为行业分类，不影响主流程。"""
+    """每日收盘后刷新概念板块映射（东方财富优先，被墙降级新浪）。
+    全部失败则保留旧缓存、退化为行业分类，不影响主流程。"""
     try:
         if dfetch.concept_map_date() == td:
             return
         uni = set(dfetch.universe_codes())
-        n = dfetch.refresh_concept_map(td, only_codes=uni or None)
+        n, source = dfetch.refresh_concept_map(td, only_codes=uni or None)
         if n:
-            db.log_scan("概念刷新", f"{td} 概念板块映射已更新 {n} 只(新浪源)", trade_date=td)
+            tag = {"eastmoney": "东方财富源", "sina": "新浪源(东财被墙降级)"}.get(source, source + "源")
+            db.log_scan("概念刷新", f"{td} 概念板块映射已更新 {n} 只({tag})", trade_date=td)
         else:
-            db.log_scan("概念降级", f"{td} 概念抓取失败/被墙，沿用旧缓存或退化为行业分类", trade_date=td)
+            db.log_scan("概念降级", f"{td} 概念抓取失败/被墙(东财+新浪均不可用)，沿用旧缓存或退化为行业分类", trade_date=td)
     except Exception as e:
         db.log_scan("概念异常", f"{repr(e)[:120]}", trade_date=td)
 
@@ -96,7 +98,10 @@ def _log_board_heat(td):
         rows = tr.board_heat(top_n=10)
         if rows:
             top = "、".join(f"{r['name']}({r['pct_chg']:+.1f}%)" for r in rows[:6])
-            db.log_scan("板块热度", f"{td} 概念板块涨幅榜TOP6：{top}", trade_date=td)
+            src = {"eastmoney": "东财", "sina": "新浪(东财被墙降级)"}.get(
+                getattr(tr.board_heat, "last_source", ""), "")
+            tag = f"[{src}源]" if src else ""
+            db.log_scan("板块热度", f"{td} 概念板块涨幅榜TOP6{tag}：{top}", trade_date=td)
     except Exception as e:
         db.log_scan("板块热度异常", f"{repr(e)[:120]}", trade_date=td)
 

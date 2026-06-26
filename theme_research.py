@@ -84,11 +84,37 @@ def resolve_codes(names, path=None):
 
 
 # --------------------------------------------------------------------------
-# 客观热度：新浪概念板块当日涨幅榜（真实交易日，零推断，可作证据/置信度输入）
+# 客观热度：概念板块当日涨幅榜（真实交易日，零推断，可作证据/置信度输入）
+# 优先东方财富(clean JSON)，被墙降级新浪。
 # --------------------------------------------------------------------------
-def board_heat(top_n=20):
-    """抓新浪概念板块当日行情，按板块涨幅降序返回前 top_n。
-    返回 [{"node","name","count","pct_chg","turnover"}]，失败返回 []。
+_EM_HEAT = ("https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=600&po=1&np=1"
+            "&fid=f3&fs=m:90+t:3&fields=f12,f14,f3,f6")   # 概念板块涨幅榜(已按 f3 降序)
+
+
+def _board_heat_eastmoney(top_n=20):
+    """东方财富概念板块当日涨幅榜（首选）。被墙/失败返回 []。"""
+    js = dfetch._em_get(_EM_HEAT)
+    try:
+        diff = (js or {}).get("data", {}).get("diff", []) or []
+    except Exception:
+        diff = []
+    out = []
+    for b in diff:
+        name = b.get("f14"); pct = b.get("f3")
+        if not name or pct in (None, "-"):
+            continue
+        try:
+            pct = float(pct) / 100.0   # 东财 f3 为 涨跌幅%*100（如 235 => 2.35）
+        except Exception:
+            continue
+        out.append({"node": b.get("f12"), "name": name, "count": 0,
+                    "pct_chg": round(pct, 2), "turnover": b.get("f6") or 0})
+    out.sort(key=lambda r: r["pct_chg"], reverse=True)
+    return out[:top_n]
+
+
+def _board_heat_sina(top_n=20):
+    """新浪概念板块当日涨幅榜（降级）。失败返回 []。
     字段口径（新浪 class 串，逗号分隔）：name, 成分数, 均价, ?, 涨跌额, 涨跌幅%, 成交量, 成交额, ..."""
     cls = dfetch._sina_get(dfetch._SINA_CLASS)
     if not cls:
@@ -110,6 +136,22 @@ def board_heat(top_n=20):
                     "pct_chg": round(pct, 2), "turnover": turnover})
     out.sort(key=lambda r: r["pct_chg"], reverse=True)
     return out[:top_n]
+
+
+def board_heat(top_n=20):
+    """概念板块当日涨幅榜（客观热度层），按涨幅降序返回前 top_n。
+    优先东方财富(clean JSON)，被墙降级新浪。返回 [{"node","name","count","pct_chg","turnover"}]，
+    失败返回 []。实际所用源记在 board_heat.last_source ∈ {'eastmoney','sina',''}。"""
+    rows = _board_heat_eastmoney(top_n=top_n)
+    if rows:
+        board_heat.last_source = "eastmoney"
+        return rows
+    rows = _board_heat_sina(top_n=top_n)
+    board_heat.last_source = "sina" if rows else ""
+    return rows
+
+
+board_heat.last_source = ""
 
 
 # --------------------------------------------------------------------------
